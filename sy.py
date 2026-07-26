@@ -4,6 +4,7 @@ import random
 import asyncio
 import json
 import os
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
@@ -13,7 +14,7 @@ from telegram.ext import (
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- تنظیمات اولیه ---
-BOT_TOKEN = "8791724770:AAFVk9FHklBaZ7o5pOE1-2LWNJKx7k68yQE"
+BOT_TOKEN = "8791724770:AAE7iltb0hh9Wd2TwkK70s7UyKMFI1Jx_Qg"
 OWNER_ID = 6749949992
 DB_FILE = "database.json"
 
@@ -304,7 +305,7 @@ async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ پیام ذخیره شد. (تعداد پیام‌ها: {len(bot_data['messages'])})\nپیام بعدی را بفرستید یا /done را بزنید.")
     return WAITING_FOR_MSG
 
-# --- دریافت مدیا (عکس، ویس، گیف، استیکر) ---
+# --- دریافت مدیا ---
 async def collect_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     media_item = None
@@ -331,7 +332,6 @@ async def done_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ ثبت با موفقیت تمام شد.", reply_markup=get_main_menu())
     return ConversationHandler.END
 
-# --- تنظیم کلمه تگ دلخواه ---
 async def receive_tag_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_tag = update.message.text.strip()
     bot_data["tag_text"] = new_tag
@@ -340,7 +340,6 @@ async def receive_tag_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ کلمه تگ روی [{new_tag}] تنظیم شد.", reply_markup=get_main_menu())
     return ConversationHandler.END
 
-# --- تنظیم متن پاسخ به افراد غیرادمین ---
 async def receive_unauth_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_unauth = update.message.text.strip()
     bot_data["unauth_msg"] = new_unauth
@@ -387,7 +386,6 @@ async def receive_admin_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ زمان را به ثانیه وارد کنید:")
         return WAITING_FOR_ADMIN_TIME
 
-# --- دستورات افزودن چندتایی همزمان (Batch Add) ---
 async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text(bot_data.get("unauth_msg", "به توپم دست نزن"))
@@ -424,7 +422,6 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "📋 لیست کاربران تنظیم‌شده:\n" + "\n".join([f"• `{u}`" for u in users])
         await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- دستور مشاهده تمام پیام‌ها و مدیاهای ثبت شده (/listmsg) ---
 async def listmsg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text(bot_data.get("unauth_msg", "به توپم دست نزن"))
@@ -505,14 +502,12 @@ async def start_auto_sending(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         medias = bot_data["medias"]
         mode = bot_data.get("attack_mode", "random")
 
-        # آماده‌سازی متن تگ‌ها
         tags_text = ""
         if bot_data["saved_users"]:
             tags_list = [f"[{tag_word}](tg://user?id={u})" for u in bot_data["saved_users"]]
             tags_text = " ".join(tags_list)
 
         try:
-            # ۱. حالت خشاب تک‌پیامی (Single Bomb)
             if mode == "bomb":
                 if messages:
                     bomb_text = "\n\n".join(messages)
@@ -520,7 +515,6 @@ async def start_auto_sending(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                         bomb_text += f"\n\n{tags_text}"
                     await context.bot.send_message(chat_id=chat_id, text=bomb_text, parse_mode="Markdown")
 
-            # ۲. حالت ترتیبی (Sequential)
             elif mode == "sequential":
                 if messages:
                     current_msg = messages[seq_index % len(messages)]
@@ -529,7 +523,6 @@ async def start_auto_sending(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=chat_id, text=current_msg, parse_mode="Markdown")
                     seq_index += 1
 
-            # ۳. حالت تصادفی (Random) + پشتیبانی از مدیا و کپشن زیر گیف و عکس
             else:
                 use_media = medias and (random.choice([True, False]) or not messages)
                 
@@ -538,27 +531,23 @@ async def start_auto_sending(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                     m_type = m["type"]
                     f_id = m["file_id"]
 
-                    # عکس (تگ در کپشن)
                     if m_type == "photo":
                         cap = m.get("caption", "")
                         if tags_text:
                             cap = f"{cap}\n\n{tags_text}" if cap else tags_text
                         await context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=cap, parse_mode="Markdown")
 
-                    # گیف (تگ دقیقاً زیر گیف در کپشن)
                     elif m_type == "animation":
                         cap = m.get("caption", "")
                         if tags_text:
                             cap = f"{cap}\n\n{tags_text}" if cap else tags_text
                         await context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=cap, parse_mode="Markdown")
 
-                    # ویس
                     elif m_type == "voice":
                         await context.bot.send_voice(chat_id=chat_id, voice=f_id)
                         if tags_text:
                             await context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown")
 
-                    # استیکر (ارسال تگ در پیام بعدی)
                     elif m_type == "sticker":
                         await context.bot.send_sticker(chat_id=chat_id, sticker=f_id)
                         if tags_text:
@@ -675,7 +664,11 @@ async def unauthorized_commands(update: Update, context: ContextTypes.DEFAULT_TY
     if not is_admin(update.effective_user.id):
         await update.message.reply_text(bot_data.get("unauth_msg", "به توپم دست نزن"))
 
-def main():
+# --- وب‌سرور داخلی جهت دور زدن تایم‌اوت Web Service در Render ---
+async def handle_ping(request):
+    return web.Response(text="Attacker Bot is Alive!")
+
+async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -723,8 +716,24 @@ def main():
 
     app.add_handler(MessageHandler(filters.COMMAND, unauthorized_commands))
 
-    print("ربات اتکر آنلاین شد...")
-    app.run_polling()
+    # راه‌اندازی وب‌سرور aiohttp
+    web_app = web.Application()
+    web_app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
+    print("ربات اتکر با وب‌سرور داخلی آنلاین شد...")
+
+    async with app:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(drop_pending_updates=True)
+        await asyncio.sleep(1)
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
