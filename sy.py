@@ -13,7 +13,7 @@ from telegram.ext import (
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- تنظیمات اولیه ---
-BOT_TOKEN = "8791724770:AAFVk9FHklBaZ7o5pOE1-2LWNJKx7k68yQE"
+BOT_TOKEN = "8791724770:AAE7iltb0hh9Wd2TwkK70s7UyKMFI1Jx_Qg"
 OWNER_ID = 6749949992
 DB_FILE = "database.json"
 
@@ -282,6 +282,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📖 راهنمای کامل دستورات:\n\n"
             "/set ID1 ID2 ID3 - افزودن دسته‌ای آیدی‌ها\n"
             "/list - مشاهده افراد سیو شده\n"
+            "/listmsg - مشاهده پیام‌ها و مدیاهای ثبت‌شده\n"
             "/del ID - حذف یک فرد\n"
             "/delallsave - پاکسازی کامل افراد\n"
             "/deldata - پاکسازی دیتابیس پیام‌ها و مدیاها\n"
@@ -313,7 +314,7 @@ async def collect_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.voice:
         media_item = {"type": "voice", "file_id": msg.voice.file_id}
     elif msg.animation:
-        media_item = {"type": "animation", "file_id": msg.animation.file_id}
+        media_item = {"type": "animation", "file_id": msg.animation.file_id, "caption": msg.caption or ""}
     elif msg.sticker:
         media_item = {"type": "sticker", "file_id": msg.sticker.file_id}
 
@@ -423,6 +424,37 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "📋 لیست کاربران تنظیم‌شده:\n" + "\n".join([f"• `{u}`" for u in users])
         await update.message.reply_text(text, parse_mode="Markdown")
 
+# --- دستور مشاهده تمام پیام‌ها و مدیاهای ثبت شده (/listmsg) ---
+async def listmsg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(bot_data.get("unauth_msg", "به توپم دست نزن"))
+        return
+
+    messages = bot_data.get("messages", [])
+    medias = bot_data.get("medias", [])
+
+    if not messages and not medias:
+        await update.message.reply_text("❌ هیچ پیام یا مدیایی در خشاب ذخیره نشده است!")
+        return
+
+    text = "📝 **لیست پیام‌ها و مدیاهای ذخیره‌شده در خشاب:**\n\n"
+
+    if messages:
+        text += "💬 **پیام‌های متنی:**\n"
+        for idx, msg in enumerate(messages, 1):
+            text += f"{idx}. {msg}\n"
+        text += "\n"
+
+    if medias:
+        text += "🖼 **مدیاهای ذخیره‌شده:**\n"
+        media_names = {"photo": "عکس 📷", "voice": "ویس 🎙", "animation": "گیف 🎬", "sticker": "استیکر 🎭"}
+        for idx, m in enumerate(medias, 1):
+            m_type_fa = media_names.get(m["type"], m["type"])
+            cap = f" (کپشن: {m['caption']})" if m.get("caption") else ""
+            text += f"{idx}. {m_type_fa}{cap}\n"
+
+    await update.message.reply_text(text)
+
 async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text(bot_data.get("unauth_msg", "به توپم دست نزن"))
@@ -473,23 +505,31 @@ async def start_auto_sending(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         medias = bot_data["medias"]
         mode = bot_data.get("attack_mode", "random")
 
+        # آماده‌سازی متن تگ‌ها
         tags_text = ""
         if bot_data["saved_users"]:
             tags_list = [f"[{tag_word}](tg://user?id={u})" for u in bot_data["saved_users"]]
-            tags_text = "\n\n" + " ".join(tags_list)
+            tags_text = " ".join(tags_list)
 
         try:
+            # ۱. حالت خشاب تک‌پیامی (Single Bomb)
             if mode == "bomb":
                 if messages:
-                    bomb_text = "\n\n".join(messages) + tags_text
+                    bomb_text = "\n\n".join(messages)
+                    if tags_text:
+                        bomb_text += f"\n\n{tags_text}"
                     await context.bot.send_message(chat_id=chat_id, text=bomb_text, parse_mode="Markdown")
 
+            # ۲. حالت ترتیبی (Sequential)
             elif mode == "sequential":
                 if messages:
-                    current_msg = messages[seq_index % len(messages)] + tags_text
+                    current_msg = messages[seq_index % len(messages)]
+                    if tags_text:
+                        current_msg += f"\n\n{tags_text}"
                     await context.bot.send_message(chat_id=chat_id, text=current_msg, parse_mode="Markdown")
                     seq_index += 1
 
+            # ۳. حالت تصادفی (Random) + پشتیبانی از مدیا و کپشن زیر گیف و عکس
             else:
                 use_media = medias and (random.choice([True, False]) or not messages)
                 
@@ -497,18 +537,37 @@ async def start_auto_sending(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                     m = random.choice(medias)
                     m_type = m["type"]
                     f_id = m["file_id"]
-                    cap = (m.get("caption", "") + tags_text) if m_type in ["photo"] else tags_text
 
+                    # عکس (تگ در کپشن)
                     if m_type == "photo":
+                        cap = m.get("caption", "")
+                        if tags_text:
+                            cap = f"{cap}\n\n{tags_text}" if cap else tags_text
                         await context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=cap, parse_mode="Markdown")
-                    elif m_type == "voice":
-                        await context.bot.send_voice(chat_id=chat_id, voice=f_id, caption=tags_text, parse_mode="Markdown")
+
+                    # گیف (تگ دقیقاً زیر گیف در کپشن)
                     elif m_type == "animation":
-                        await context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=tags_text, parse_mode="Markdown")
+                        cap = m.get("caption", "")
+                        if tags_text:
+                            cap = f"{cap}\n\n{tags_text}" if cap else tags_text
+                        await context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=cap, parse_mode="Markdown")
+
+                    # ویس
+                    elif m_type == "voice":
+                        await context.bot.send_voice(chat_id=chat_id, voice=f_id)
+                        if tags_text:
+                            await context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown")
+
+                    # استیکر (ارسال تگ در پیام بعدی)
                     elif m_type == "sticker":
                         await context.bot.send_sticker(chat_id=chat_id, sticker=f_id)
+                        if tags_text:
+                            await context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown")
+
                 elif messages:
-                    rand_msg = random.choice(messages) + tags_text
+                    rand_msg = random.choice(messages)
+                    if tags_text:
+                        rand_msg += f"\n\n{tags_text}"
                     await context.bot.send_message(chat_id=chat_id, text=rand_msg, parse_mode="Markdown")
 
         except Exception as e:
@@ -651,6 +710,7 @@ def main():
 
     app.add_handler(CommandHandler("set", set_user_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
+    app.add_handler(CommandHandler("listmsg", listmsg_cmd))
     app.add_handler(CommandHandler("del", del_cmd))
     app.add_handler(CommandHandler("delallsave", delallsave_cmd))
     app.add_handler(CommandHandler("deldata", deldata_cmd))
@@ -667,4 +727,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()              
+    main()
