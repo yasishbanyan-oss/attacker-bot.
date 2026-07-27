@@ -39,7 +39,8 @@ bot_data = {
     },
     "user_logs": {},          
     "history": [],            
-    "joined_groups": {}       
+    "joined_groups": {},
+    "username_cache": {}
 }
 
 (
@@ -102,21 +103,38 @@ def estimate_creation_year(user_id: int) -> str:
     else: return "2026"
 
 async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE):
-    """شناسایی کاربر از روی آیدی عددی یا یوزرنیم"""
+    """شناسایی هوشمند کاربر بر اساس آیدی عددی یا یوزرنیم"""
     input_str = input_str.strip()
     if input_str.isdigit():
         uid = int(input_str)
+        uname = bot_data.get("username_cache", {}).get(str(uid), "Unknown")
         try:
             chat = await context.bot.get_chat(uid)
-            return chat.id, chat.username or "Unknown", chat.full_name or "کاربر"
+            if chat.username:
+                uname = chat.username
+                bot_data.setdefault("username_cache", {})[str(uid)] = uname
+                save_db()
+            return chat.id, uname, chat.full_name or "کاربر"
         except Exception:
-            return uid, "Unknown", "کاربر"
+            return uid, uname, "کاربر"
+            
     elif input_str.startswith("@"):
+        clean_uname = input_str.replace("@", "").lower()
+        # سرچ اول در کَش دیتابیس
+        for uid_str, cached_uname in bot_data.get("username_cache", {}).items():
+            if cached_uname.lower() == clean_uname:
+                return int(uid_str), cached_uname, "کاربر"
+
+        # سرچ دوم از API
         try:
             chat = await context.bot.get_chat(input_str)
-            return chat.id, chat.username or input_str.replace("@", ""), chat.full_name or "کاربر"
+            if chat.username:
+                bot_data.setdefault("username_cache", {})[str(chat.id)] = chat.username
+                save_db()
+            return chat.id, chat.username or clean_uname, chat.full_name or "کاربر"
         except Exception:
-            return None, None, None
+            return None, clean_uname, None
+            
     return None, None, None
 
 def get_main_menu(owner_user_id: int):
@@ -378,17 +396,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action.startswith("target_add_"):
         target_uid = action.split("_")[2]
-        fetched_username = "Unknown"
+        fetched_username = bot_data.get("username_cache", {}).get(target_uid, "Unknown")
         try:
             c = await context.bot.get_chat(int(target_uid))
-            if c.username: fetched_username = c.username
+            if c.username: 
+                fetched_username = c.username
+                bot_data.setdefault("username_cache", {})[target_uid] = fetched_username
         except Exception: pass
 
         bot_data["saved_users"][target_uid] = {"username": fetched_username, "custom_tag": None}
         save_db()
         
         uname_disp = f"@{fetched_username}" if fetched_username != "Unknown" else "بدون یوزرنیم"
-        await query.edit_message_text(f"✅ کاربر {uname_disp} با آیدی عددی `{target_uid}` به لیست تارگت‌ها اضافه شد.", parse_mode="Markdown")
+        
+        # ادیت پیام و نمایش قطعی پیام تایید
+        if query.message.photo:
+            await query.edit_message_caption(caption=f"✅ کاربر {uname_disp} با آیدی عددی `{target_uid}` با موفقیت به لیست تارگت‌ها اضافه شد.", parse_mode="Markdown")
+        else:
+            await query.edit_message_text(text=f"✅ کاربر {uname_disp} با آیدی عددی `{target_uid}` با موفقیت به لیست تارگت‌ها اضافه شد.", parse_mode="Markdown")
 
     elif action == "menu_help":
         await help_cmd(update, context)
@@ -504,7 +529,6 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "username": uname,
             "permissions": ["admins", "messages", "commands"]
         }
-        # ثبت مستقیم و خودکار ادمین در دیتابیس
         bot_data["admins"][str(uid)] = {
             "type": "permanent",
             "username": uname,
@@ -524,7 +548,6 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text("❌ آیدی عددی یا یوزرنیم نامعتبره! مجدداً بفرست یا /cancel بزن:", message_thread_id=thread_id)
     return WAITING_FOR_ADMIN_ID
 
-# --- دستورات افزودن و حذف ادمین مستقیما با دستور ---
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     if update.effective_user.id != OWNER_ID and not has_permission(update.effective_user.id, "admins"):
@@ -537,6 +560,8 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u = update.message.reply_to_message.from_user
         target_uid = u.id
         target_uname = u.username or "Unknown"
+        if target_uname != "Unknown":
+            bot_data.setdefault("username_cache", {})[str(target_uid)] = target_uname
     elif context.args:
         target_uid, target_uname, _ = await resolve_user_input(context.args[0], context)
 
@@ -566,7 +591,7 @@ async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if target_uid and str(target_uid) in bot_data["admins"]:
         if target_uid == OWNER_ID:
-            await update.message.reply_text("❌ مالکن اصلی رو نمی‌تونی پاک کنی کصخل!", message_thread_id=thread_id)
+            await update.message.reply_text("❌ مالک اصلی رو نمی‌تونی پاک کنی کصخل!", message_thread_id=thread_id)
             return
         del bot_data["admins"][str(target_uid)]
         save_db()
@@ -585,8 +610,11 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
         target_user = update.message.reply_to_message.from_user
         uid = str(target_user.id)
+        uname = target_user.username or "NoUsername"
+        if uname != "NoUsername":
+            bot_data.setdefault("username_cache", {})[uid] = uname
         custom_tag = " ".join(context.args) if context.args else None
-        bot_data["saved_users"][uid] = {"username": target_user.username or "NoUsername", "custom_tag": custom_tag}
+        bot_data["saved_users"][uid] = {"username": uname, "custom_tag": custom_tag}
         added.append(f"{uid} (لقب: {custom_tag or 'پیش‌فرض'})")
     elif context.args:
         for arg in context.args:
@@ -614,13 +642,18 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for uid, info in users.items():
         uname_val = info.get('username')
         if not uname_val or uname_val in ["Unknown", "NoUsername"]:
-            try:
-                c = await context.bot.get_chat(int(uid))
-                if c.username:
-                    uname_val = c.username
-                    info['username'] = uname_val
-                    save_db()
-            except Exception: pass
+            cached = bot_data.get("username_cache", {}).get(uid)
+            if cached:
+                uname_val = cached
+            else:
+                try:
+                    c = await context.bot.get_chat(int(uid))
+                    if c.username:
+                        uname_val = c.username
+                        info['username'] = uname_val
+                        bot_data.setdefault("username_cache", {})[uid] = uname_val
+                        save_db()
+                except Exception: pass
 
         uname = f"@{uname_val}" if uname_val and uname_val not in ["Unknown", "NoUsername"] else "بدون یوزرنیم"
         ctag = info.get('custom_tag') or 'پیش‌فرض'
@@ -693,6 +726,11 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_user = update.message.reply_to_message.from_user
     else:
         target_user = update.effective_user
+
+    # آپدیت کش یوزرنیم
+    if target_user.username:
+        bot_data.setdefault("username_cache", {})[str(target_user.id)] = target_user.username
+        save_db()
 
     creation_year = estimate_creation_year(target_user.id)
     username_str = f"@{target_user.username}" if target_user.username else "ندارد"
@@ -906,6 +944,13 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg: return
+
+    # ذخیره و کَش زنده یوزرنیم هر کسی که چت می‌کنه
+    if msg.from_user:
+        uid_str = str(msg.from_user.id)
+        if msg.from_user.username:
+            bot_data.setdefault("username_cache", {})[uid_str] = msg.from_user.username
+            save_db()
 
     if msg.chat.type in ["group", "supergroup"]:
         bot_data.setdefault("joined_groups", {})[str(msg.chat.id)] = msg.chat.title
