@@ -889,8 +889,8 @@ async def start_auto_sending(chat_id: int, thread_id: int, context: ContextTypes
                             await context.bot.send_sticker(chat_id=chat_id, sticker=f_id, message_thread_id=thread_id)
                             if tags_text:
                                 await context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id)
-          except Exception as e:
-            logging.error(f"Error in auto send: {e}")                         
+        except Exception as e:
+            logging.error(f"Error in auto send: {e}")                        
 
 async def go_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
