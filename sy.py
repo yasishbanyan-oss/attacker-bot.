@@ -15,7 +15,7 @@ from telegram.ext import (
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- تنظیمات اولیه ---
-BOT_TOKEN = "8772627350:AAEcZMYdHY6z3DlnkQv2Cm2eZStrR94IeUk"
+BOT_TOKEN = "8791724770:AAFVk9FHklBaZ7o5pOE1-2LWNJKx7k68yQE"
 OWNER_ID = 6749949992
 DB_FILE = "database.json"
 
