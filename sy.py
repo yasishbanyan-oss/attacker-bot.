@@ -474,28 +474,37 @@ async def receive_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
+    
     if text.isdigit():
         new_admin_id = int(text)
-        fetched_username = "نامشخص"
+        fetched_username = "ادمین جدید"
+        
+        # استعلام اسم با حفاظت کامل در برابر ارور Chat not found
         try:
             chat_info = await context.bot.get_chat(new_admin_id)
-            if chat_info.username: fetched_username = chat_info.username
-            elif chat_info.first_name: fetched_username = chat_info.first_name
-        except Exception: pass
+            if chat_info.username: 
+                fetched_username = chat_info.username
+            elif chat_info.first_name: 
+                fetched_username = chat_info.first_name
+        except Exception as e:
+            logging.warning(f"Could not fetch chat for {new_admin_id}: {e}")
 
         bot_data["temp_admin_data"] = {
             "id": new_admin_id,
             "username": fetched_username,
             "permissions": ["admins", "messages", "commands"]
         }
+        
         await update.message.reply_text(
-            f"👤 آیدی `{new_admin_id}` ({fetched_username}) اوکی شد.\nدسترسی‌هاش رو مشخص کن:",
+            f"👤 آیدی `{new_admin_id}` ({fetched_username}) دریافت شد.\nدسترسی‌هاش رو مشخص کن و ثبت رو بزن:",
             parse_mode="Markdown",
             reply_markup=get_permissions_menu(update.effective_user.id, new_admin_id),
             message_thread_id=thread_id
         )
         return ConversationHandler.END
+        
+    await update.message.reply_text("❌ آیدی عددی نامعتبره! فقط عدد بفرست:", message_thread_id=thread_id)
     return WAITING_FOR_ADMIN_ID
 
 # --- دستورات اصلی ---
