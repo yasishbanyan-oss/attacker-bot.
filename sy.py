@@ -917,8 +917,6 @@ async def recent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"⏱ [{time_str}] {log['event']}\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
-restore_cmd
-
 async def history_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     if not is_admin(update.effective_user.id) or not context.args: return
