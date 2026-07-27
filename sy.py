@@ -103,7 +103,7 @@ def estimate_creation_year(user_id: int) -> str:
     else: return "2026"
 
 async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE):
-    """شناسایی هوشمند کاربر بر اساس آیدی عددی یا یوزرنیم"""
+    """حل مشکلاف یوزرنیم و حروف کوچک/بزرگ"""
     input_str = input_str.strip()
     if input_str.isdigit():
         uid = int(input_str)
@@ -119,15 +119,16 @@ async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE)
             return uid, uname, "کاربر"
             
     elif input_str.startswith("@"):
-        clean_uname = input_str.replace("@", "").lower()
-        # سرچ اول در کَش دیتابیس
+        clean_uname = input_str.replace("@", "").strip().lower()
+        
+        # 1. جستجو در حافظه کش
         for uid_str, cached_uname in bot_data.get("username_cache", {}).items():
             if cached_uname.lower() == clean_uname:
                 return int(uid_str), cached_uname, "کاربر"
 
-        # سرچ دوم از API
+        # 2. استعلام مستقیم از API تلگرام
         try:
-            chat = await context.bot.get_chat(input_str)
+            chat = await context.bot.get_chat(f"@{clean_uname}")
             if chat.username:
                 bot_data.setdefault("username_cache", {})[str(chat.id)] = chat.username
                 save_db()
@@ -408,12 +409,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db()
         
         uname_disp = f"@{fetched_username}" if fetched_username != "Unknown" else "بدون یوزرنیم"
-        
-        # ادیت پیام و نمایش قطعی پیام تایید
-        if query.message.photo:
-            await query.edit_message_caption(caption=f"✅ کاربر {uname_disp} با آیدی عددی `{target_uid}` با موفقیت به لیست تارگت‌ها اضافه شد.", parse_mode="Markdown")
-        else:
-            await query.edit_message_text(text=f"✅ کاربر {uname_disp} با آیدی عددی `{target_uid}` با موفقیت به لیست تارگت‌ها اضافه شد.", parse_mode="Markdown")
+        confirm_msg = f"✅ کاربر {uname_disp} با آیدی عددی `{target_uid}` به لیست اضافه شد."
+
+        try:
+            if query.message.photo:
+                await query.edit_message_caption(caption=confirm_msg, parse_mode="Markdown")
+            else:
+                await query.edit_message_text(text=confirm_msg, parse_mode="Markdown")
+        except Exception:
+            await query.message.reply_text(confirm_msg, parse_mode="Markdown")
 
     elif action == "menu_help":
         await help_cmd(update, context)
@@ -556,7 +560,7 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_uid = None
     target_uname = "Unknown"
 
-    if update.message.reply_to_message:
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
         u = update.message.reply_to_message.from_user
         target_uid = u.id
         target_uname = u.username or "Unknown"
@@ -584,7 +588,7 @@ async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target_uid = None
 
-    if update.message.reply_to_message:
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
         target_uid = update.message.reply_to_message.from_user.id
     elif context.args:
         target_uid, _, _ = await resolve_user_input(context.args[0], context)
@@ -607,7 +611,7 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     added = []
-    if update.message.reply_to_message:
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
         target_user = update.message.reply_to_message.from_user
         uid = str(target_user.id)
         uname = target_user.username or "NoUsername"
@@ -675,7 +679,7 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     
     target_id = None
-    if update.message.reply_to_message:
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
         target_id = str(update.message.reply_to_message.from_user.id)
     elif context.args:
         uid, _, _ = await resolve_user_input(context.args[0], context)
