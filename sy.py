@@ -4,6 +4,7 @@ import random
 import asyncio
 import json
 import os
+import aiohttp
 from datetime import datetime
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, InputMediaPhoto
@@ -88,14 +89,35 @@ def has_permission(user_id: int, perm: str) -> bool:
 
 def estimate_creation_year(user_id: int) -> str:
     if user_id < 100000000: return "2013-2015"
-    elif user_id < 250000000: return "2016"
-    elif user_id < 500000000: return "2017"
-    elif user_id < 800000000: return "2018-2019"
-    elif user_id < 1300000000: return "2020-2021"
-    elif user_id < 2000000000: return "2022-2023"
-    elif user_id < 6000000000: return "2024"
-    elif user_id < 7500000000: return "2025"
+    elif user_id < 300000000: return "2016"
+    elif user_id < 550000000: return "2017"
+    elif user_id < 850000000: return "2018"
+    elif user_id < 1100000000: return "2019"
+    elif user_id < 1600000000: return "2020"
+    elif user_id < 2100000000: return "2021"
+    elif user_id < 5400000000: return "2022"
+    elif user_id < 6300000000: return "2023"
+    elif user_id < 7200000000: return "2024"
+    elif user_id < 8000000000: return "2025"
     else: return "2026"
+
+async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE):
+    """شناسایی کاربر از روی آیدی عددی یا یوزرنیم"""
+    input_str = input_str.strip()
+    if input_str.isdigit():
+        uid = int(input_str)
+        try:
+            chat = await context.bot.get_chat(uid)
+            return chat.id, chat.username or "Unknown", chat.full_name or "کاربر"
+        except Exception:
+            return uid, "Unknown", "کاربر"
+    elif input_str.startswith("@"):
+        try:
+            chat = await context.bot.get_chat(input_str)
+            return chat.id, chat.username or input_str.replace("@", ""), chat.full_name or "کاربر"
+        except Exception:
+            return None, None, None
+    return None, None, None
 
 def get_main_menu(owner_user_id: int):
     keyboard = [
@@ -200,7 +222,13 @@ async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
-    await update.message.reply_text("❌ عملیات جاری لغو شد.", message_thread_id=thread_id)
+    user_id = update.effective_user.id
+    
+    await update.message.reply_text(
+        "❌ عملیات جاری لغو شد. برگشتیم به منوی مدیریت:",
+        reply_markup=get_main_menu(user_id),
+        message_thread_id=thread_id
+    )
     return ConversationHandler.END
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -221,26 +249,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not has_permission(user_id, "messages"):
             await query.edit_message_text("❌ دسترسی نداری حاجی!", reply_markup=get_main_menu(owner_user_id))
             return
-        await query.edit_message_text("📝 متون مورد نظرت رو یکی‌یکی بفرست.\nوقتی کارت تموم شد /done رو بزن.")
+        await query.edit_message_text("📝 متون مورد نظرت رو یکی‌یکی بفرست.\nوقتی کارت تموم شد /done یا /cancel رو بزن.")
         return WAITING_FOR_MSG
 
     elif action == "menu_set_media":
         if not has_permission(user_id, "messages"):
             await query.edit_message_text("❌ دسترسی نداری حاجی!", reply_markup=get_main_menu(owner_user_id))
             return
-        await query.edit_message_text("🖼 عکس، ویس، گیف یا استیکرهات رو بفرست.\nوقتی کارت تموم شد /done رو بزن.")
+        await query.edit_message_text("🖼 عکس، ویس، گیف یا استیکرهات رو بفرست.\nوقتی کارت تموم شد /done یا /cancel رو بزن.")
         return WAITING_FOR_MEDIA
 
     elif action == "menu_tag_text":
-        await query.edit_message_text(f"🏷 کلمه تگ فعلی: {bot_data['tag_text']}\n\nکلمه جدید رو بفرست:")
+        await query.edit_message_text(f"🏷 کلمه تگ فعلی: {bot_data['tag_text']}\n\nکلمه جدید رو بفرست (یا /cancel برای انصراف):")
         return WAITING_FOR_TAG_TEXT
 
     elif action == "menu_unauth_msg":
-        await query.edit_message_text(f"💬 متن جواب به غریبه‌ها: {bot_data.get('unauth_msg', 'به توپم دست نزن')}\n\nمتن جدید رو بفرست:")
+        await query.edit_message_text(f"💬 متن جواب به غریبه‌ها: {bot_data.get('unauth_msg', 'به توپم دست نزن')}\n\nمتن جدید رو بفرست (یا /cancel برای انصراف):")
         return WAITING_FOR_UNAUTH_MSG
 
     elif action == "menu_lock_msg":
-        await query.edit_message_text(f"🔒 متن قفلی فعلی: {bot_data.get('lock_msg', 'کصمادرت اگر لف بدی مادرجنده')}\n\nمتن جدید رو بفرست:")
+        await query.edit_message_text(f"🔒 متن قفلی فعلی: {bot_data.get('lock_msg', 'کصمادرت اگر لف بدی مادرجنده')}\n\nمتن جدید رو بفرست (یا /cancel برای انصراف):")
         return WAITING_FOR_LOCK_MSG
 
     elif action == "menu_time":
@@ -306,7 +334,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ همه ادمین‌ها پاک شدن.", reply_markup=get_admin_menu(owner_user_id))
 
     elif action == "admin_add":
-        await query.edit_message_text("آیدی عددی ادمین جدید رو بفرست:")
+        await query.edit_message_text("آیدی عددی یا یوزرنیم (@username) ادمین جدید رو بفرست:")
         return WAITING_FOR_ADMIN_ID
 
     elif action.startswith("perm_"):
@@ -358,7 +386,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         bot_data["saved_users"][target_uid] = {"username": fetched_username, "custom_tag": None}
         save_db()
-        await query.edit_message_text(f"✅ کاربر {target_uid} به تارگت‌ها اضافه شد.")
+        
+        uname_disp = f"@{fetched_username}" if fetched_username != "Unknown" else "بدون یوزرنیم"
+        await query.edit_message_text(f"✅ کاربر {uname_disp} با آیدی عددی `{target_uid}` به لیست تارگت‌ها اضافه شد.", parse_mode="Markdown")
 
     elif action == "menu_help":
         await help_cmd(update, context)
@@ -369,16 +399,19 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "📖 راهنمای کامل دستورات:\n\n"
         "/panel - باز کردن پنل مدیریت\n"
-        "/set ID1 ID2 ID3 - افزودن دسته‌ای آیدی‌ها یا لقب بر روی ریپلی\n"
+        "/addadmin ID/@Username - افزودن ادمین جدید\n"
+        "/deladmin ID/@Username - حذف ادمین\n"
+        "/set ID1 @Username2 - افزودن دسته‌ای آیدی/یوزرنیم یا لقب بر روی ریپلی\n"
+        "/del ID/@Username - حذف یک فرد یا حذف بر روی ریپلی\n"
         "/list - مشاهده افراد سیو شده\n"
         "/listmsg - مشاهده پیام‌ها و مدیاهای ثبت‌شده\n"
-        "/del ID - حذف یک فرد یا حذف بر روی ریپلی\n"
         "/delallsave - پاکسازی کامل افراد\n"
         "/deltext - پاکسازی پیام‌های متنی خشاب\n"
         "/delmedia - پاکسازی مدیاهای خشاب\n"
         "/deldata - پاکسازی دیتابیس پیام‌ها و مدیاها\n"
         "/go - شروع اتک با منوی انتخاب حالت\n"
         "/stop - توقف اتک\n"
+        "/cancel - لغو عملیات جاری و بازگشت به منوی پنل\n"
         "/recent - گزارش اتفاقات ۲۴ ساعت اخیر\n"
         "/report - ارسال گزارش زنده ربات به پیوی مالک\n"
         "/info - شناسنامه و مشخصات کامل کاربر بر روی ریپلی\n"
@@ -463,35 +496,84 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = msg.text.strip()
     thread_id = msg.message_thread_id if msg.is_topic_message else None
     
-    if text.isdigit():
-        new_admin_id = int(text)
-        fetched_username = "ادمین جدید"
-        
-        try:
-            chat_info = await context.bot.get_chat(new_admin_id)
-            if chat_info.username: 
-                fetched_username = chat_info.username
-            elif chat_info.first_name: 
-                fetched_username = chat_info.first_name
-        except Exception:
-            pass
-
+    uid, uname, fname = await resolve_user_input(text, context)
+    
+    if uid:
         bot_data["temp_admin_data"] = {
-            "id": new_admin_id,
-            "username": fetched_username,
+            "id": uid,
+            "username": uname,
             "permissions": ["admins", "messages", "commands"]
         }
-        
+        # ثبت مستقیم و خودکار ادمین در دیتابیس
+        bot_data["admins"][str(uid)] = {
+            "type": "permanent",
+            "username": uname,
+            "permissions": ["admins", "messages", "commands"]
+        }
+        save_db()
+        log_event(f"➕ ثبت ادمین جدید: {uid}")
+
         await msg.reply_text(
-            f"👤 آیدی `{new_admin_id}` ({fetched_username}) دریافت شد.\nدسترسی‌هاش رو مشخص کن و ثبت رو بزن:",
+            f"👤 کاربر `{uid}` (@{uname}) با موفقیت به ادمین‌ها اضافه شد.\nمی‌تونی دسترسی‌هاش رو سفارشی کنی:",
             parse_mode="Markdown",
-            reply_markup=get_permissions_menu(update.effective_user.id, new_admin_id),
+            reply_markup=get_permissions_menu(update.effective_user.id, uid),
             message_thread_id=thread_id
         )
         return ConversationHandler.END
         
-    await msg.reply_text("❌ آیدی عددی نامعتبره! فقط عدد بفرست:", message_thread_id=thread_id)
+    await msg.reply_text("❌ آیدی عددی یا یوزرنیم نامعتبره! مجدداً بفرست یا /cancel بزن:", message_thread_id=thread_id)
     return WAITING_FOR_ADMIN_ID
+
+# --- دستورات افزودن و حذف ادمین مستقیما با دستور ---
+async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    if update.effective_user.id != OWNER_ID and not has_permission(update.effective_user.id, "admins"):
+        return
+
+    target_uid = None
+    target_uname = "Unknown"
+
+    if update.message.reply_to_message:
+        u = update.message.reply_to_message.from_user
+        target_uid = u.id
+        target_uname = u.username or "Unknown"
+    elif context.args:
+        target_uid, target_uname, _ = await resolve_user_input(context.args[0], context)
+
+    if target_uid:
+        bot_data["admins"][str(target_uid)] = {
+            "type": "permanent",
+            "username": target_uname,
+            "permissions": ["admins", "messages", "commands"]
+        }
+        save_db()
+        log_event(f"➕ افزودن ادمین: {target_uid}")
+        await update.message.reply_text(f"✅ کاربر `{target_uid}` (@{target_uname}) به ادمین‌های ربات اضافه شد.", parse_mode="Markdown", message_thread_id=thread_id)
+    else:
+        await update.message.reply_text("❌ ورودی نامعتبره. آیدی عددی یا یوزرنیم رو وارد کن یا رو پیامش ریپلی کن.", message_thread_id=thread_id)
+
+async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    if update.effective_user.id != OWNER_ID and not has_permission(update.effective_user.id, "admins"):
+        return
+
+    target_uid = None
+
+    if update.message.reply_to_message:
+        target_uid = update.message.reply_to_message.from_user.id
+    elif context.args:
+        target_uid, _, _ = await resolve_user_input(context.args[0], context)
+
+    if target_uid and str(target_uid) in bot_data["admins"]:
+        if target_uid == OWNER_ID:
+            await update.message.reply_text("❌ مالکن اصلی رو نمی‌تونی پاک کنی کصخل!", message_thread_id=thread_id)
+            return
+        del bot_data["admins"][str(target_uid)]
+        save_db()
+        log_event(f"➖ حذف ادمین: {target_uid}")
+        await update.message.reply_text(f"❌ ادمین `{target_uid}` حذف شد.", parse_mode="Markdown", message_thread_id=thread_id)
+    else:
+        await update.message.reply_text("❌ همچین ادمینی پیدا نشد.", message_thread_id=thread_id)
 
 async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
@@ -508,20 +590,16 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         added.append(f"{uid} (لقب: {custom_tag or 'پیش‌فرض'})")
     elif context.args:
         for arg in context.args:
-            if arg.isdigit():
-                uid = arg
-                fetched_uname = "Unknown"
-                try:
-                    c = await context.bot.get_chat(int(uid))
-                    if c.username: fetched_uname = c.username
-                except Exception: pass
-
-                bot_data["saved_users"][uid] = {"username": fetched_uname, "custom_tag": None}
-                added.append(f"{uid} (لقب: پیش‌فرض)")
+            uid, uname, _ = await resolve_user_input(arg, context)
+            if uid:
+                bot_data["saved_users"][str(uid)] = {"username": uname or "NoUsername", "custom_tag": None}
+                added.append(f"{uid} (@{uname or 'بدون یوزرنیم'})")
 
     if added:
         save_db()
         await update.message.reply_text(f"✅ ردیف شد، اضافه شدند:\n" + "\n".join(added), message_thread_id=thread_id)
+    else:
+        await update.message.reply_text("❌ ورودی نامعتبره. آیدی یا یوزرنیم رو وارد کن.", message_thread_id=thread_id)
 
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
@@ -567,7 +645,8 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
         target_id = str(update.message.reply_to_message.from_user.id)
     elif context.args:
-        target_id = str(context.args[0])
+        uid, _, _ = await resolve_user_input(context.args[0], context)
+        if uid: target_id = str(uid)
 
     if target_id and target_id in bot_data["saved_users"]:
         del bot_data["saved_users"][target_id]
@@ -849,9 +928,21 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         save_db()
 
-# --- وب‌سرور مخصوص Render ---
+# --- سیستم پینگ خودکار جهت بیدار نگه‌داشتن هاست ---
 async def handle_ping(request): 
     return web.Response(text="Bot is Alive!")
+
+async def auto_keep_alive(port):
+    await asyncio.sleep(10)
+    url = f"http://localhost:{port}/"
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(url) as resp:
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(300)
 
 async def start_web_server():
     web_app = web.Application()
@@ -861,9 +952,9 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
+    asyncio.create_task(auto_keep_alive(port))
 
 async def main():
-    # استارت سریع وب‌سرور برای جلوگیری از خاموش شدن Render
     await start_web_server()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -894,6 +985,9 @@ async def main():
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
+    app.add_handler(CommandHandler("addadmin", addadmin_cmd))
+    app.add_handler(CommandHandler("deladmin", deladmin_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("set", set_user_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
@@ -915,7 +1009,7 @@ async def main():
     
     app.add_handler(MessageHandler(filters.ALL, track_chats))
 
-    print("ربات رو هاست رندر کاملاً آنلاین شد...")
+    print("ربات آنلاین شد...")
 
     async with app:
         await app.initialize()
