@@ -849,9 +849,23 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         save_db()
 
-async def handle_ping(request): return web.Response(text="Bot is Alive!")
+# --- وب‌سرور مخصوص Render ---
+async def handle_ping(request): 
+    return web.Response(text="Bot is Alive!")
+
+async def start_web_server():
+    web_app = web.Application()
+    web_app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
 
 async def main():
+    # استارت سریع وب‌سرور برای جلوگیری از خاموش شدن Render
+    await start_web_server()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_cmd))
@@ -901,22 +915,12 @@ async def main():
     
     app.add_handler(MessageHandler(filters.ALL, track_chats))
 
-    web_app = web.Application()
-    web_app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(web_app)
-    await runner.setup()
-    
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-
-    print("ربات آنلاین شد...")
+    print("ربات رو هاست رندر کاملاً آنلاین شد...")
 
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        await asyncio.sleep(1)
         await asyncio.Event().wait()
 
 if __name__ == "__main__":
