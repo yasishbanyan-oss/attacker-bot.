@@ -15,11 +15,10 @@ from telegram.ext import (
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- تنظیمات اولیه ---
-BOT_TOKEN = "8791724770:AAFVk9FHklBaZ7o5pOE1-2LWNJKx7k68yQE"
+BOT_TOKEN = "8772627350:AAEcZMYdHY6z3DlnkQv2Cm2eZStrR94IeUk"
 OWNER_ID = 6749949992
 DB_FILE = "database.json"
 
-# --- دیتابیس پیش‌فرض ---
 bot_data = {
     "messages": [],           
     "medias": [],            
@@ -42,7 +41,6 @@ bot_data = {
     "joined_groups": {}       
 }
 
-# حالات FSM
 (
     WAITING_FOR_MSG, 
     WAITING_FOR_CUSTOM_TIME, 
@@ -54,7 +52,6 @@ bot_data = {
     WAITING_FOR_MEDIA
 ) = range(8)
 
-# --- مدیریت دیتابیس ---
 def save_db():
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -82,19 +79,6 @@ def log_event(event_text: str):
 
 def is_admin(user_id: int) -> bool:
     uid_str = str(user_id)
-    now = time.time()
-    to_delete = []
-    
-    for uid, info in bot_data["admins"].items():
-        if info.get("type") == "hourly" and info.get("expires_at", 0) < now:
-            to_delete.append(uid)
-            
-    for uid in to_delete:
-        del bot_data["admins"][uid]
-        log_event(f"⏰ زمان ادمین ساعتی پرید: {uid}")
-    if to_delete:
-        save_db()
-
     return uid_str in bot_data["admins"] or user_id == OWNER_ID
 
 def has_permission(user_id: int, perm: str) -> bool:
@@ -113,7 +97,6 @@ def estimate_creation_year(user_id: int) -> str:
     elif user_id < 7500000000: return "2025"
     else: return "2026"
 
-# --- کیبوردها ---
 def get_main_menu(owner_user_id: int):
     keyboard = [
         [InlineKeyboardButton("💬 تنظیم پیام‌ها", callback_data=f"menu_set_msg:{owner_user_id}"), InlineKeyboardButton("🖼 تنظیم مدیا", callback_data=f"menu_set_media:{owner_user_id}")],
@@ -179,11 +162,10 @@ async def check_panel_owner(query, owner_user_id: int) -> bool:
         return False
     return True
 
-# --- دستور /start ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     username_str = f"@{user.username}" if user.username else str(user.id)
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     
     welcome_text = (
         f"سلام {username_str} عزیز! 👋\n"
@@ -192,10 +174,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, message_thread_id=thread_id)
 
-# --- دستور /panel ---
 async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
 
     if not is_admin(user_id):
         await update.message.reply_text(bot_data.get("unauth_msg", "به توپم دست نزن"), message_thread_id=thread_id)
@@ -217,7 +198,11 @@ async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message_thread_id=thread_id
     )
 
-# --- کلیک دکمه‌ها ---
+async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
+    await update.message.reply_text("❌ عملیات جاری لغو شد.", message_thread_id=thread_id)
+    return ConversationHandler.END
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data_parts = query.data.split(":")
@@ -306,7 +291,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ آره پاک کن", callback_data=f"admin_delall_yes:{owner_user_id}")],
             [InlineKeyboardButton("❌ بیخیال", callback_data=f"admin_list:{owner_user_id}")]
         ]
-        await query.edit_message_text("⚠️ مطمئنی می‌خوای همه ادمین‌ها (بجز خودت) بپرن؟", reply_markup=InlineKeyboardMarkup(kb))
+        await query.edit_message_text("⚠️ مطمئنی می‌خوای همه ادمین‌ها بپرن؟", reply_markup=InlineKeyboardMarkup(kb))
 
     elif action == "admin_delall_yes":
         bot_data["admins"] = {
@@ -318,7 +303,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         save_db()
         log_event("☣️ پاکسازی کامل ادمین‌ها")
-        await query.edit_message_text("✅ همه ادمین‌ها پاک شدن، فقط خودت موندی.", reply_markup=get_admin_menu(owner_user_id))
+        await query.edit_message_text("✅ همه ادمین‌ها پاک شدن.", reply_markup=get_admin_menu(owner_user_id))
 
     elif action == "admin_add":
         await query.edit_message_text("آیدی عددی ادمین جدید رو بفرست:")
@@ -345,7 +330,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚙️ دسترسی‌های ادمین رو مشخص کن:", reply_markup=get_permissions_menu(owner_user_id, int(target_id)))
 
     elif action == "admin_owners":
-        await query.edit_message_text(f"👑 مالک اصلی:\nآیدی: `{OWNER_ID}`", parse_mode="Markdown", reply_markup=get_admin_menu(owner_user_id))
+        await query.edit_message_text(f"👑 مالک اصلی:\n• `{OWNER_ID}`", parse_mode="Markdown", reply_markup=get_admin_menu(owner_user_id))
 
     elif action.startswith("backup_"):
         b_type = action.split("_")[1]
@@ -373,12 +358,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         bot_data["saved_users"][target_uid] = {"username": fetched_username, "custom_tag": None}
         save_db()
-        await query.edit_message_text(f"✅ کاربر {target_uid} به لیست افراد سیو شده اضافه شد.")
+        await query.edit_message_text(f"✅ کاربر {target_uid} به تارگت‌ها اضافه شد.")
 
     elif action == "menu_help":
         await help_cmd(update, context)
 
-# --- راهنما ---
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     
@@ -408,7 +392,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(help_text, message_thread_id=thread_id)
 
-# --- ورودی‌های FSM ---
 async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_data["messages"].append(update.message.text)
     save_db()
@@ -471,6 +454,7 @@ async def receive_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"✅ تایم ارسال شد {sec} ثانیه.", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
         return ConversationHandler.END
     return WAITING_FOR_CUSTOM_TIME
+
 async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.text:
@@ -492,7 +476,6 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # ذخیره موقت
         bot_data["temp_admin_data"] = {
             "id": new_admin_id,
             "username": fetched_username,
@@ -505,13 +488,11 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_permissions_menu(update.effective_user.id, new_admin_id),
             message_thread_id=thread_id
         )
-        # خروج قطعی از وضعیت FSM تا رو پیام‌های بعدی گیر نده
         return ConversationHandler.END
         
     await msg.reply_text("❌ آیدی عددی نامعتبره! فقط عدد بفرست:", message_thread_id=thread_id)
     return WAITING_FOR_ADMIN_ID
 
-# --- دستورات اصلی ---
 async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     if not is_admin(update.effective_user.id):
@@ -567,7 +548,6 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ctag = info.get('custom_tag') or 'پیش‌فرض'
         text += f"• {uid} ({uname}) ➔ 🏷 لقب: {ctag}\n"
 
-    # ارسال بدون مارک‌داون برای جلوگیری از کرش بخاطر کاراکترهای عجیب اسامی
     await update.message.reply_text(text, message_thread_id=thread_id)
 
 async def listmsg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -626,12 +606,10 @@ async def deldata_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🗑 کلاً خشاب خالی شد.", message_thread_id=thread_id)
 
 async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
+    if not update.message: return
 
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     
-    # اگه رو کسی ریپلی شده بود اون، وگرنه خود فرستنده پیام
     if update.message.reply_to_message and update.message.reply_to_message.from_user:
         target_user = update.message.reply_to_message.from_user
     else:
@@ -653,7 +631,6 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ ولش کن", callback_data=f"menu_main:{update.effective_user.id}")]
     ]
     
-    # تست عکس پروفایل
     try:
         photos = await context.bot.get_user_profile_photos(target_user.id, limit=1)
         if photos and photos.total_count > 0:
@@ -667,7 +644,6 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Error photo info: {e}")
 
-    # ارسال متن ساده بدون مارک‌داون (بدون کرش)
     await update.message.reply_text(
         info_text, 
         reply_markup=InlineKeyboardMarkup(kb), 
@@ -695,10 +671,8 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     try:
         await context.bot.send_message(chat_id=OWNER_ID, text=rep, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Error sending report to owner PM: {e}")
+    except Exception: pass
 
-# --- موتور ارسال اتک ---
 async def start_auto_sending(chat_id: int, thread_id: int, context: ContextTypes.DEFAULT_TYPE):
     seq_index = 0
     default_tag = bot_data.get("tag_text", "شخص پدر مرده")
@@ -850,7 +824,6 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await msg.edit_text(status_text)
 
-# --- سنسورها ---
 async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg: return
@@ -876,18 +849,18 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         save_db()
 
-# --- وب‌سرور aiohttp ---
 async def handle_ping(request): return web.Response(text="Bot is Alive!")
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("panel", panel_cmd))
-    app.add_handler(CommandHandler("help", help_cmd))
 
     conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_callback)],
+        entry_points=[
+            CommandHandler("panel", panel_cmd),
+            CallbackQueryHandler(handle_callback)
+        ],
         states={
             WAITING_FOR_MSG: [CommandHandler("done", done_messages), MessageHandler(filters.TEXT & ~filters.COMMAND, collect_messages)],
             WAITING_FOR_MEDIA: [CommandHandler("done", done_messages), MessageHandler((filters.PHOTO | filters.VOICE | filters.ANIMATION | filters.Sticker.ALL) & ~filters.COMMAND, collect_media)],
@@ -897,12 +870,17 @@ async def main():
             WAITING_FOR_CUSTOM_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_custom_time)],
             WAITING_FOR_ADMIN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_admin_id)],
         },
-        fallbacks=[CallbackQueryHandler(handle_callback)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_cmd),
+            CommandHandler("panel", panel_cmd),
+            CallbackQueryHandler(handle_callback)
+        ],
         allow_reentry=True,
         per_message=False
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("set", set_user_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("listmsg", listmsg_cmd))
@@ -932,7 +910,7 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-    print("ربات اتکر کاملاً آنلاین شد...")
+    print("ربات آنلاین شد...")
 
     async with app:
         await app.initialize()
