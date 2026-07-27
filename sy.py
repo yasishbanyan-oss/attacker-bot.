@@ -243,12 +243,6 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     user_id = update.effective_user.id
     
-    # کنترل دسترسی ادمین/مالک
-    if not is_admin(user_id):
-        unauth = bot_data.get("unauth_msg", "به توپم دست نزن")
-        await update.message.reply_text(unauth, message_thread_id=thread_id)
-        return ConversationHandler.END
-
     await update.message.reply_text(
         "❌ عملیات جاری لغو شد. برگشتیم به منوی مدیریت:",
         reply_markup=get_main_menu(user_id),
@@ -859,38 +853,13 @@ async def start_auto_sending(chat_id: int, thread_id: int, context: ContextTypes
                     seq_index += 1
 
             else:
-                # ترکیب متون و مدیاها برای انتخاب رندوم واقعی
-                all_items = []
-                for msg_item in messages:
-                    all_items.append({"kind": "text", "val": msg_item})
-                for media_item in medias:
-                    all_items.append({"kind": "media", "val": media_item})
+                if messages:
+                    rand_msg = random.choice(messages)
+                    if tags_text: rand_msg += f"\n\n{tags_text}"
+                    await context.bot.send_message(chat_id=chat_id, text=rand_msg, parse_mode="Markdown", message_thread_id=thread_id)
 
-                if all_items:
-                    chosen = random.choice(all_items)
-                    if chosen["kind"] == "text":
-                        msg_txt = chosen["val"]
-                        if tags_text:
-                            msg_txt += f"\n\n{tags_text}"
-                        await context.bot.send_message(chat_id=chat_id, text=msg_txt, parse_mode="Markdown", message_thread_id=thread_id)
-                    
-                    elif chosen["kind"] == "media":
-                        m = chosen["val"]
-                        m_type = m["type"]
-                        f_id = m["file_id"]
-                        
-                        if m_type == "photo":
-                            await context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=tags_text, parse_mode="Markdown", message_thread_id=thread_id)
-                        elif m_type == "animation": # گیف
-                            await context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=tags_text, parse_mode="Markdown", message_thread_id=thread_id)
-                        elif m_type == "voice":
-                            await context.bot.send_voice(chat_id=chat_id, voice=f_id, caption=tags_text, parse_mode="Markdown", message_thread_id=thread_id)
-                        elif m_type == "sticker":
-                            await context.bot.send_sticker(chat_id=chat_id, sticker=f_id, message_thread_id=thread_id)
-                            if tags_text:
-                                await context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id)
-        except Exception as e:
-            logging.error(f"Error in auto send: {e}")                        
+        except Exception as e: logging.error(f"Error in auto send: {e}")
+        await asyncio.sleep(bot_data["interval"])
 
 async def go_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
@@ -918,6 +887,30 @@ async def recent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_str = time.strftime('%H:%M:%S', time.localtime(log['time']))
         text += f"⏱ [{time_str}] {log['event']}\n"
     await update.message.reply_text(text, parse_mode="Markdown")
+
+async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    if update.effective_user.id != OWNER_ID: return
+
+    msg = update.message
+    if msg.reply_to_message and msg.reply_to_message.document:
+        doc = msg.reply_to_message.document
+        file_name = doc.file_name.lower()
+        file = await context.bot.get_file(doc.file_id)
+        download_path = await file.download_to_drive()
+
+        if file_name.endswith(".txt"):
+            with open(download_path, "r", encoding="utf-8") as f: content = f.read()
+            words = content.split()
+            bot_data["messages"].extend(words)
+            save_db()
+            await update.message.reply_text(f"✅ تعداد {len(words)} کلمه اضافه شدند!", message_thread_id=thread_id)
+        elif file_name.endswith(".json"):
+            await download_path.replace(DB_FILE)
+            load_db()
+            await update.message.reply_text("✅ دیتابیس کامل ریستور شد!", message_thread_id=thread_id)
+
+        if os.path.exists(download_path): os.remove(download_path)
 
 async def history_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
