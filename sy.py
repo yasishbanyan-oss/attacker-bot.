@@ -553,54 +553,57 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_ADMIN_ID
 
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    if update.effective_user.id != OWNER_ID and not has_permission(update.effective_user.id, "admins"):
-        return
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
+    if not is_admin(update.effective_user.id): return
 
     target_uid = None
     target_uname = "Unknown"
 
     if update.message.reply_to_message and update.message.reply_to_message.from_user:
         u = update.message.reply_to_message.from_user
-        target_uid = u.id
-        target_uname = u.username or "Unknown"
-        if target_uname != "Unknown":
-            bot_data.setdefault("username_cache", {})[str(target_uid)] = target_uname
+        target_uid = str(u.id)
+        target_uname = u.username or u.full_name
+        if u.username:
+            bot_data.setdefault("username_cache", {})[target_uid] = u.username
     elif context.args:
-        target_uid, target_uname, _ = await resolve_user_input(context.args[0], context)
+        raw_arg = " ".join(context.args).replace(f"@{context.bot.username}", "").strip()
+        target_uid, target_uname = await resolve_user_input(raw_arg, context)
 
     if target_uid:
-        bot_data["admins"][str(target_uid)] = {
+        bot_data["admins"][target_uid] = {
             "type": "permanent",
             "username": target_uname,
             "permissions": ["admins", "messages", "commands"]
         }
         save_db()
         log_event(f"➕ افزودن ادمین: {target_uid}")
-        await update.message.reply_text(f"✅ کاربر `{target_uid}` (@{target_uname}) به ادمین‌های ربات اضافه شد.", parse_mode="Markdown", message_thread_id=thread_id)
+        
+        uname_disp = f"@{target_uname}" if target_uname != "Unknown" else "بدون یوزرنیم"
+        response_text = f"✅ کاربر {uname_disp} با آیدی عددی {target_uid} ادمین ربات شد!"
+        await update.message.reply_text(response_text, message_thread_id=thread_id)
     else:
-        await update.message.reply_text("❌ ورودی نامعتبره. آیدی عددی یا یوزرنیم رو وارد کن یا رو پیامش ریپلی کن.", message_thread_id=thread_id)
+        await update.message.reply_text("❌ بر روی پیام کاربر ریپلی کن یا آیدی/یوزرنیم رو جلو دستور بنویس.", message_thread_id=thread_id)
 
 async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    if update.effective_user.id != OWNER_ID and not has_permission(update.effective_user.id, "admins"):
-        return
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
+    if not is_admin(update.effective_user.id): return
 
     target_uid = None
 
     if update.message.reply_to_message and update.message.reply_to_message.from_user:
-        target_uid = update.message.reply_to_message.from_user.id
+        target_uid = str(update.message.reply_to_message.from_user.id)
     elif context.args:
-        target_uid, _, _ = await resolve_user_input(context.args[0], context)
+        raw_arg = " ".join(context.args).replace(f"@{context.bot.username}", "").strip()
+        target_uid, _ = await resolve_user_input(raw_arg, context)
 
-    if target_uid and str(target_uid) in bot_data["admins"]:
-        if target_uid == OWNER_ID:
+    if target_uid and target_uid in bot_data["admins"]:
+        if target_uid == str(OWNER_ID):
             await update.message.reply_text("❌ مالک اصلی رو نمی‌تونی پاک کنی کصخل!", message_thread_id=thread_id)
             return
-        del bot_data["admins"][str(target_uid)]
+        del bot_data["admins"][target_uid]
         save_db()
         log_event(f"➖ حذف ادمین: {target_uid}")
-        await update.message.reply_text(f"❌ ادمین `{target_uid}` حذف شد.", parse_mode="Markdown", message_thread_id=thread_id)
+        await update.message.reply_text(f"❌ ادمین {target_uid} از لیست ادمین‌ها حذف شد.", message_thread_id=thread_id)
     else:
         await update.message.reply_text("❌ همچین ادمینی پیدا نشد.", message_thread_id=thread_id)
 
