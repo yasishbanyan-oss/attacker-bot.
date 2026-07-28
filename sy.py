@@ -4,10 +4,12 @@ import random
 import asyncio
 import json
 import os
+import re
 import aiohttp
 from datetime import datetime
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions, InputMediaPhoto
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
     MessageHandler, filters, ContextTypes, ConversationHandler
@@ -20,7 +22,8 @@ BOT_TOKEN = "8791724770:AAFVk9FHklBaZ7o5pOE1-2LWNJKx7k68yQE"
 OWNER_ID = 6749949992
 DB_FILE = "database.json"
 
-bot_data = {
+# تعریف ساختار پیش‌فرض و استاندارد برای اعتبارسنجی (مورد ۲)
+DEFAULT_BOT_DATA = {
     "messages": [],           
     "medias": [],            
     "interval": 10,           
@@ -40,8 +43,13 @@ bot_data = {
     "user_logs": {},          
     "history": [],            
     "joined_groups": {},
-    "username_cache": {}
+    "username_cache": {},
+    "locked_users": [],
+    "lock_paused": False,
+    "temp_admin_data": {}
 }
+
+bot_data = dict(DEFAULT_BOT_DATA)
 
 (
     WAITING_FOR_MSG, 
@@ -54,12 +62,69 @@ bot_data = {
     WAITING_FOR_MEDIA
 ) = range(8)
 
+db_lock = asyncio.Lock()
+active_attack_task = None
+web_runner = None
+keep_alive_task = None
+
+def escape_markdown(text: str) -> str:
+    if not isinstance(text, str):
+        text = str(text)
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+# مورد ۱ و ۷: ذخیره ایمن دیتابیس به صورت اتمیک با Lock مشترک و عدم بلاک شدن Event Loop
+async def save_db_async():
+    async with db_lock:
+        temp_file = DB_FILE + ".tmp"
+        try:
+            def _write():
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(bot_data, f, ensure_ascii=False, indent=4)
+            
+            await asyncio.to_thread(_write)
+            await asyncio.to_thread(os.replace, temp_file, DB_FILE)
+        except Exception as e:
+            logging.error(f"Error saving DB atomically: {e}")
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+
 def save_db():
     try:
-        with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(bot_data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        logging.error(f"Error saving DB: {e}")
+        loop = asyncio.get_running_loop()
+        loop.create_task(save_db_async())
+    except RuntimeError:
+        # اگر لوپی در جریان نبود (مثلا هنگام لود اولیه)
+        temp_file = DB_FILE + ".tmp"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(bot_data, f, ensure_ascii=False, indent=4)
+            os.replace(temp_file, DB_FILE)
+        except Exception as e:
+            logging.error(f"Error in sync save_db: {e}")
+
+# مورد ۲: اعتبارسنجی ساختار و نوع داده‌ها هنگام Restore و جلوگیری از ورود کلیدهای ناشناس
+def validate_and_merge_data(loaded_data: dict) -> dict:
+    if not isinstance(loaded_data, dict):
+        raise ValueError("Loaded data is not a valid dictionary.")
+    
+    merged = dict(DEFAULT_BOT_DATA)
+    for key, default_val in DEFAULT_BOT_DATA.items():
+        if key in loaded_data:
+            val = loaded_data[key]
+            if isinstance(default_val, list) and isinstance(val, list):
+                merged[key] = val
+            elif isinstance(default_val, dict) and isinstance(val, dict):
+                merged[key] = val
+            elif isinstance(default_val, (int, float, str, bool)) and isinstance(val, type(default_val)):
+                merged[key] = val
+            else:
+                # اگر نوع داده مطابقت نداشت، مقدار پیش‌فرض حفظ می‌شود
+                pass
+    return merged
 
 def load_db():
     global bot_data
@@ -67,9 +132,9 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                bot_data.update(loaded)
+                bot_data = validate_and_merge_data(loaded)
         except Exception as e:
-            logging.error(f"Error loading DB: {e}")
+            logging.error(f"Error loading DB (file might be corrupted): {e}")
 
 load_db()
 
@@ -103,7 +168,6 @@ def estimate_creation_year(user_id: int) -> str:
     else: return "2026"
 
 async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE):
-    """حل مشکلاف یوزرنیم و حروف کوچک/بزرگ"""
     input_str = input_str.strip()
     if input_str.isdigit():
         uid = int(input_str)
@@ -112,7 +176,10 @@ async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE)
             chat = await context.bot.get_chat(uid)
             if chat.username:
                 uname = chat.username
-                bot_data.setdefault("username_cache", {})[str(uid)] = uname
+                cache = bot_data.setdefault("username_cache", {})
+                cache[str(uid)] = uname
+                if len(cache) > 1000:
+                    cache.pop(next(iter(cache)))
                 save_db()
             return chat.id, uname, chat.full_name or "کاربر"
         except Exception:
@@ -121,16 +188,17 @@ async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE)
     elif input_str.startswith("@"):
         clean_uname = input_str.replace("@", "").strip().lower()
         
-        # 1. جستجو در حافظه کش
         for uid_str, cached_uname in bot_data.get("username_cache", {}).items():
             if cached_uname.lower() == clean_uname:
                 return int(uid_str), cached_uname, "کاربر"
 
-        # 2. استعلام مستقیم از API تلگرام
         try:
             chat = await context.bot.get_chat(f"@{clean_uname}")
             if chat.username:
-                bot_data.setdefault("username_cache", {})[str(chat.id)] = chat.username
+                cache = bot_data.setdefault("username_cache", {})
+                cache[str(chat.id)] = chat.username
+                if len(cache) > 1000:
+                    cache.pop(next(iter(cache)))
                 save_db()
             return chat.id, chat.username or clean_uname, chat.full_name or "کاربر"
         except Exception:
@@ -175,7 +243,8 @@ def get_admin_menu(owner_user_id: int):
     return InlineKeyboardMarkup(keyboard)
 
 def get_permissions_menu(owner_user_id: int, target_id: int):
-    perms = bot_data.get("temp_admin_data", {}).get("permissions", [])
+    temp_data = bot_data.get("temp_admin_data", {})
+    perms = temp_data.get("permissions", []) if isinstance(temp_data, dict) else []
     p1 = "✅" if "admins" in perms else "❌"
     p2 = "✅" if "messages" in perms else "❌"
     p3 = "✅" if "commands" in perms else "❌"
@@ -225,16 +294,17 @@ async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     panel_text = (
         "👋 به پنل مدیریت ربات خوش آمدید.\n\n"
-        f"🏷 متن تگ فعلی:\n«{bot_data['tag_text']}»\n"
+        f"🏷 متن تگ فعلی:\n«{escape_markdown(bot_data['tag_text'])}»\n"
         "-------------------\n"
-        f"💬 متن غیرادمین فعلی:\n«{bot_data.get('unauth_msg', 'به توپم دست نزن')}»\n"
+        f"💬 متن غیرادمین فعلی:\n«{escape_markdown(bot_data.get('unauth_msg', 'به توپم دست نزن'))}»\n"
         "-------------------\n"
-        f"🔒 متن اتک قفلی:\n«{bot_data.get('lock_msg', 'کصمادرت اگر لف بدی مادرجنده')}»\n\n"
+        f"🔒 متن اتک قفلی:\n«{escape_markdown(bot_data.get('lock_msg', 'کصمادرت اگر لف بدی مادرجنده'))}»\n\n"
         "لطفاً یک بخش را انتخاب کنید:"
     )
 
     await update.message.reply_text(
         panel_text,
+        parse_mode="Markdown",
         reply_markup=get_main_menu(user_id),
         message_thread_id=thread_id
     )
@@ -242,7 +312,14 @@ async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     user_id = update.effective_user.id
-    
+
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            bot_data.get("unauth_msg", "به توپم دست نزن"),
+            message_thread_id=thread_id
+        )
+        return
+
     await update.message.reply_text(
         "❌ عملیات جاری لغو شد. برگشتیم به منوی مدیریت:",
         reply_markup=get_main_menu(user_id),
@@ -260,6 +337,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
     user_id = query.from_user.id
+
+    if not is_admin(user_id):
+        await query.answer("دسترسی نداری!", show_alert=True)
+        return
+
+    global active_attack_task
 
     if action == "menu_main":
         await query.edit_message_text("👋 پنل اصلی مدیریت:", reply_markup=get_main_menu(owner_user_id))
@@ -313,10 +396,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = query.message.chat_id
         thread_id = query.message.message_thread_id if query.message.is_topic_message else None
         
-        asyncio.create_task(start_auto_sending(chat_id, thread_id, context))
+        # مورد ۵: مدیریت کامل Taskها (لغو تسک قبلی و ریست کردن متغیر)
+        if active_attack_task and not active_attack_task.done():
+            active_attack_task.cancel()
+            try:
+                await active_attack_task
+            except asyncio.CancelledError:
+                pass
+            active_attack_task = None
+
+        active_attack_task = asyncio.create_task(start_auto_sending(chat_id, thread_id, context))
         
         log_event(f"🚀 شروع اتک {mode} توسط {user_id}")
-        await query.edit_message_text(f"🚀 اتک رو حالت **{mode}** با تایم {bot_data['interval']} ثانیه استارت خورد!")
+        await query.edit_message_text(f"🚀 اتک رو حالت **{mode}** با تایم {bot_data['interval']} ثانیه استارت خورد!", parse_mode="Markdown")
 
     elif action == "menu_admins":
         if user_id != OWNER_ID and not has_permission(user_id, "admins"):
@@ -360,6 +452,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p = action.split("_")[1]
         target_id = data_parts[2] if len(data_parts) > 2 else "0"
         
+        # مورد ۳: ثبت نهایی ادمین دقیقاً بعد از زدن دکمه Save
         if p == "save":
             t_data = bot_data.get("temp_admin_data", {})
             bot_data["admins"][str(target_id)] = {
@@ -367,6 +460,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "username": t_data.get("username", "نامشخص"),
                 "permissions": t_data.get("permissions", ["admins", "messages", "commands"])
             }
+            bot_data["temp_admin_data"] = {}
             save_db()
             log_event(f"➕ ثبت ادمین جدید: {target_id}")
             await query.edit_message_text(f"✅ ادمین `{target_id}` ثبت شد.", parse_mode="Markdown", reply_markup=get_admin_menu(owner_user_id))
@@ -384,13 +478,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db()
         
         if b_type == "full":
-            await context.bot.send_document(chat_id=query.message.chat_id, document=open(DB_FILE, "rb"), filename="database.json", caption="📦 بکاپ کامل دیتابیس.")
+            with open(DB_FILE, "rb") as f_doc:
+                await context.bot.send_document(chat_id=query.message.chat_id, document=f_doc, filename="database.json", caption="📦 بکاپ کامل دیتابیس.")
         else:
             filtered = [m for m in bot_data.get("medias", []) if m["type"] == b_type]
             out_file = f"backup_{b_type}.json"
             with open(out_file, "w", encoding="utf-8") as f:
                 json.dump(filtered, f, ensure_ascii=False, indent=4)
-            await context.bot.send_document(chat_id=query.message.chat_id, document=open(out_file, "rb"), filename=out_file, caption=f"📦 بکاپ بخش {b_type}")
+            with open(out_file, "rb") as f_doc:
+                await context.bot.send_document(chat_id=query.message.chat_id, document=f_doc, filename=out_file, caption=f"📦 بکاپ بخش {b_type}")
             if os.path.exists(out_file): os.remove(out_file)
 
         await query.edit_message_text("✅ بفرما اینم فایل بکاپ.")
@@ -402,7 +498,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c = await context.bot.get_chat(int(target_uid))
             if c.username: 
                 fetched_username = c.username
-                bot_data.setdefault("username_cache", {})[target_uid] = fetched_username
+                cache = bot_data.setdefault("username_cache", {})
+                cache[target_uid] = fetched_username
+                if len(cache) > 1000:
+                    cache.pop(next(iter(cache)))
         except Exception: pass
 
         bot_data["saved_users"][target_uid] = {"username": fetched_username, "custom_tag": None}
@@ -455,10 +554,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(help_text, message_thread_id=thread_id)
 
 async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    bot_data["messages"].append(update.message.text)
-    save_db()
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    await update.message.reply_text(f"✅ ذخیره شد. (تعداد: {len(bot_data['messages'])})\nبعدی رو بفرست یا /done رو بزن.", message_thread_id=thread_id)
+    if update.message and update.message.text:
+        bot_data["messages"].append(update.message.text)
+        save_db()
+        thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+        await update.message.reply_text(f"✅ ذخیره شد. (تعداد: {len(bot_data['messages'])})\nبعدی رو بفرست یا /done رو بزن.", message_thread_id=thread_id)
     return WAITING_FOR_MSG
 
 async def collect_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -483,38 +583,42 @@ async def done_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def receive_tag_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_tag = update.message.text.strip()
-    bot_data["tag_text"] = new_tag
-    save_db()
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    await update.message.reply_text(f"✅ کلمه تگ شد: {new_tag}", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
+    if update.message and update.message.text:
+        new_tag = update.message.text.strip()
+        bot_data["tag_text"] = new_tag
+        save_db()
+        thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+        await update.message.reply_text(f"✅ کلمه تگ شد: {new_tag}", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
     return ConversationHandler.END
 
 async def receive_unauth_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_unauth = update.message.text.strip()
-    bot_data["unauth_msg"] = new_unauth
-    save_db()
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    await update.message.reply_text(f"✅ جواب به غریبه‌ها تغییر کرد به: {new_unauth}", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
+    if update.message and update.message.text:
+        new_unauth = update.message.text.strip()
+        bot_data["unauth_msg"] = new_unauth
+        save_db()
+        thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+        await update.message.reply_text(f"✅ جواب به غریبه‌ها تغییر کرد به: {new_unauth}", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
     return ConversationHandler.END
 
 async def receive_lock_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_lock = update.message.text.strip()
-    bot_data["lock_msg"] = new_lock
-    save_db()
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    await update.message.reply_text(f"✅ متن قفلی تغییر کرد به: {new_lock}", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
+    if update.message and update.message.text:
+        new_lock = update.message.text.strip()
+        bot_data["lock_msg"] = new_lock
+        save_db()
+        thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+        await update.message.reply_text(f"✅ متن قفلی تغییر کرد به: {new_lock}", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
     return ConversationHandler.END
 
 async def receive_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    if text.isdigit():
-        sec = int(text)
-        bot_data["interval"] = sec
-        save_db()
-        await update.message.reply_text(f"✅ تایم ارسال شد {sec} ثانیه.", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
-        return ConversationHandler.END
+    if update.message and update.message.text:
+        text = update.message.text
+        thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+        if text.isdigit():
+            sec = int(text)
+            bot_data["interval"] = sec
+            save_db()
+            await update.message.reply_text(f"✅ تایم ارسال شد {sec} ثانیه.", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
+            return ConversationHandler.END
     return WAITING_FOR_CUSTOM_TIME
 
 async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -528,21 +632,15 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, uname, fname = await resolve_user_input(text, context)
     
     if uid:
+        # مورد ۳: ادمین قبل از پایان تنظیم Permissionها داخل admins ثبت نشود.
         bot_data["temp_admin_data"] = {
             "id": uid,
             "username": uname,
             "permissions": ["admins", "messages", "commands"]
         }
-        bot_data["admins"][str(uid)] = {
-            "type": "permanent",
-            "username": uname,
-            "permissions": ["admins", "messages", "commands"]
-        }
-        save_db()
-        log_event(f"➕ ثبت ادمین جدید: {uid}")
 
         await msg.reply_text(
-            f"👤 کاربر `{uid}` (@{uname}) با موفقیت به ادمین‌ها اضافه شد.\nمی‌تونی دسترسی‌هاش رو سفارشی کنی:",
+            f"👤 کاربر `{uid}` (@{uname}) پیدا شد.\nمی‌تونی دسترسی‌هاش رو سفارشی کنی و بعد ثبت نهایی رو بزنی:",
             parse_mode="Markdown",
             reply_markup=get_permissions_menu(update.effective_user.id, uid),
             message_thread_id=thread_id
@@ -564,10 +662,16 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_uid = str(u.id)
         target_uname = u.username or u.full_name
         if u.username:
-            bot_data.setdefault("username_cache", {})[target_uid] = u.username
+            cache = bot_data.setdefault("username_cache", {})
+            cache[target_uid] = u.username
+            if len(cache) > 1000:
+                cache.pop(next(iter(cache)))
     elif context.args:
         raw_arg = " ".join(context.args).replace(f"@{context.bot.username}", "").strip()
-        target_uid, target_uname = await resolve_user_input(raw_arg, context)
+        resolved_uid, resolved_uname, _ = await resolve_user_input(raw_arg, context)
+        if resolved_uid:
+            target_uid = str(resolved_uid)
+            target_uname = resolved_uname
 
     if target_uid:
         bot_data["admins"][target_uid] = {
@@ -594,7 +698,9 @@ async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_uid = str(update.message.reply_to_message.from_user.id)
     elif context.args:
         raw_arg = " ".join(context.args).replace(f"@{context.bot.username}", "").strip()
-        target_uid, _ = await resolve_user_input(raw_arg, context)
+        resolved_uid, _, _ = await resolve_user_input(raw_arg, context)
+        if resolved_uid:
+            target_uid = str(resolved_uid)
 
     if target_uid and target_uid in bot_data["admins"]:
         if target_uid == str(OWNER_ID):
@@ -619,7 +725,10 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = str(target_user.id)
         uname = target_user.username or "NoUsername"
         if uname != "NoUsername":
-            bot_data.setdefault("username_cache", {})[uid] = uname
+            cache = bot_data.setdefault("username_cache", {})
+            cache[uid] = uname
+            if len(cache) > 1000:
+                cache.pop(next(iter(cache)))
         custom_tag = " ".join(context.args) if context.args else None
         bot_data["saved_users"][uid] = {"username": uname, "custom_tag": custom_tag}
         added.append(f"{uid} (لقب: {custom_tag or 'پیش‌فرض'})")
@@ -658,7 +767,10 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if c.username:
                         uname_val = c.username
                         info['username'] = uname_val
-                        bot_data.setdefault("username_cache", {})[uid] = uname_val
+                        cache = bot_data.setdefault("username_cache", {})
+                        cache[uid] = uname_val
+                        if len(cache) > 1000:
+                            cache.pop(next(iter(cache)))
                         save_db()
                 except Exception: pass
 
@@ -734,9 +846,11 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         target_user = update.effective_user
 
-    # آپدیت کش یوزرنیم
     if target_user.username:
-        bot_data.setdefault("username_cache", {})[str(target_user.id)] = target_user.username
+        cache = bot_data.setdefault("username_cache", {})
+        cache[str(target_user.id)] = target_user.username
+        if len(cache) > 1000:
+            cache.pop(next(iter(cache)))
         save_db()
 
     creation_year = estimate_creation_year(target_user.id)
@@ -744,9 +858,9 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     info_text = (
         "📊 آمار طرف:\n\n"
-        f"👤 اسم: {target_user.full_name}\n"
-        f"🆔 یوزرنیم: {username_str}\n"
-        f"🔢 آیدی عددی: {target_user.id}\n"
+        f"👤 اسم: {escape_markdown(target_user.full_name)}\n"
+        f"🆔 یوزرنیم: {escape_markdown(username_str)}\n"
+        f"🔢 آیدی عددی: `{target_user.id}`\n"
         f"📅 تخمین ساخت اکانت: {creation_year}\n"
     )
 
@@ -761,6 +875,7 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_photo(
                 photo=photos.photos[0][-1].file_id, 
                 caption=info_text, 
+                parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(kb), 
                 message_thread_id=thread_id
             )
@@ -770,6 +885,7 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         info_text, 
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb), 
         message_thread_id=thread_id
     )
@@ -782,7 +898,7 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     groups_list_text = "👥 **گروه‌ها:**\n"
     for gid, gtitle in bot_data.get("joined_groups", {}).items():
-        groups_list_text += f"• {gtitle} (`{gid}`)\n"
+        groups_list_text += f"• {escape_markdown(gtitle)} (`{gid}`)\n"
 
     rep = (
         f"📊 **گزارش زنده:**\n\n"
@@ -797,123 +913,318 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=OWNER_ID, text=rep, parse_mode="Markdown")
     except Exception: pass
 
+# تابع کمکی برای مدیریت FloodWait (مورد ۹)
+async def safe_telegram_call(coro):
+    while True:
+        try:
+            return await coro
+        except RetryAfter as e:
+            logging.warning(f"FloodWait encountered. Sleeping for {e.retry_after} seconds.")
+            await asyncio.sleep(e.retry_after + 1)
+        except TelegramError as te:
+            logging.error(f"Telegram error in safe call: {te}")
+            raise
+        except Exception as ex:
+            logging.error(f"Unexpected error in safe call: {ex}")
+            raise
+
 async def start_auto_sending(chat_id: int, thread_id: int, context: ContextTypes.DEFAULT_TYPE):
     seq_index = 0
-    default_tag = bot_data.get("tag_text", "شخص پدر مرده")
+    try:
+        while bot_data.get("is_running", False):
+            # مورد ۴: بررسی دقیق حالت Lock و وضعیت pause
+            if bot_data.get("lock_paused", False):
+                await asyncio.sleep(2)
+                continue
 
-    if bot_data.get("attack_mode") == "lock":
-        for uid in bot_data["saved_users"].keys():
+            mode = bot_data.get("attack_mode", "random")
+            messages = bot_data.get("messages", [])
+            medias = bot_data.get("medias", [])
+            default_tag = bot_data.get("tag_text", "شخص پدر مرده")
+
+            if not messages and not medias and mode != "lock":
+                await asyncio.sleep(2)
+                continue
+
+            tags = []
+            for uid, info in bot_data.get("saved_users", {}).items():
+                tag = info.get("custom_tag") or default_tag
+                tags.append(f"[{escape_markdown(tag)}](tg://user?id={uid})")
+
+            tags_text = " ".join(tags)
+
             try:
-                await context.bot.restrict_chat_member(
-                    chat_id=chat_id,
-                    user_id=int(uid),
-                    permissions=ChatPermissions(can_send_messages=False)
-                )
-            except Exception as e: logging.error(f"Error muting {uid}: {e}")
+                if mode == "lock":
+                    bot_data["locked_users"] = list(bot_data.get("saved_users", {}).keys())
+                    for uid in bot_data["locked_users"]:
+                        try:
+                            await safe_telegram_call(context.bot.restrict_chat_member(
+                                chat_id=chat_id,
+                                user_id=int(uid),
+                                permissions=ChatPermissions(can_send_messages=False)
+                            ))
+                        except Exception as e:
+                            logging.error(f"Error muting {uid}: {e}")
 
-        lock_text = bot_data.get("lock_msg", "کصمادرت اگر لف بدی مادرجنده")
-        tags_list = [f"[{uinfo.get('custom_tag') or default_tag}](tg://user?id={uid})" for uid, uinfo in bot_data["saved_users"].items()]
-        if tags_list: lock_text += "\n\n" + " ".join(tags_list)
-        await context.bot.send_message(chat_id=chat_id, text=lock_text, parse_mode="Markdown", message_thread_id=thread_id)
+                    save_db()
 
-    while bot_data["is_running"]:
-        messages = bot_data["messages"]
-        medias = bot_data["medias"]
-        mode = bot_data.get("attack_mode", "random")
+                    lock_text = bot_data.get("lock_msg", "...")
+                    tags_list = [
+                        f"[{escape_markdown(uinfo.get('custom_tag') or default_tag)}](tg://user?id={uid})"
+                        for uid, uinfo in bot_data.get("saved_users", {}).items()
+                    ]
 
-        tags_list = [f"[{uinfo.get('custom_tag') or default_tag}](tg://user?id={uid})" for uid, uinfo in bot_data["saved_users"].items()]
-        tags_text = " ".join(tags_list)
+                    if tags_list:
+                        lock_text += "\n\n" + " ".join(tags_list)
 
-        try:
-            await context.bot.send_chat_action(chat_id=chat_id, action="typing", message_thread_id=thread_id)
+                    await safe_telegram_call(context.bot.send_message(
+                        chat_id=chat_id,
+                        text=lock_text,
+                        parse_mode="Markdown",
+                        message_thread_id=thread_id
+                    ))
 
-            if mode == "bomb":
-                if messages:
-                    bomb_text = "\n\n".join(messages)
-                    if tags_text: bomb_text += f"\n\n{tags_text}"
-                    await context.bot.send_message(chat_id=chat_id, text=bomb_text, parse_mode="Markdown", message_thread_id=thread_id)
-                photos = [m for m in medias if m["type"] == "photo"]
-                if photos:
-                    media_group = [InputMediaPhoto(media=p["file_id"]) for p in photos[:10]]
-                    await context.bot.send_media_group(chat_id=chat_id, media=media_group, message_thread_id=thread_id)
+                elif mode == "bomb":
+                    if messages:
+                        bomb_text = "\n\n".join([escape_markdown(m) for m in messages])
+                        if tags_text:
+                            bomb_text += f"\n\n{tags_text}"
 
-            elif mode == "sequential":
-                combined = messages + medias
-                if combined:
-                    item = combined[seq_index % len(combined)]
-                    if isinstance(item, str):
-                        msg_txt = item + (f"\n\n{tags_text}" if tags_text else "")
-                        await context.bot.send_message(chat_id=chat_id, text=msg_txt, parse_mode="Markdown", message_thread_id=thread_id)
-                    elif isinstance(item, dict):
-                        m_type, f_id = item["type"], item["file_id"]
-                        if m_type == "photo": await context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=tags_text, parse_mode="Markdown", message_thread_id=thread_id)
-                        elif m_type == "animation": await context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=tags_text, parse_mode="Markdown", message_thread_id=thread_id)
-                        elif m_type == "voice": await context.bot.send_voice(chat_id=chat_id, voice=f_id, message_thread_id=thread_id)
-                        elif m_type == "sticker": await context.bot.send_sticker(chat_id=chat_id, sticker=f_id, message_thread_id=thread_id)
-                    seq_index += 1
+                        await safe_telegram_call(context.bot.send_message(
+                            chat_id=chat_id,
+                            text=bomb_text,
+                            parse_mode="Markdown",
+                            message_thread_id=thread_id
+                        ))
 
-            else:
-                if messages:
-                    rand_msg = random.choice(messages)
-                    if tags_text: rand_msg += f"\n\n{tags_text}"
-                    await context.bot.send_message(chat_id=chat_id, text=rand_msg, parse_mode="Markdown", message_thread_id=thread_id)
+                    for media in medias:
+                        m_type = media["type"]
+                        f_id = media["file_id"]
+                        cap = escape_markdown(media.get("caption", ""))
+                        if tags_text:
+                            cap = f"{cap}\n\n{tags_text}" if cap else tags_text
 
-        except Exception as e: logging.error(f"Error in auto send: {e}")
-        await asyncio.sleep(bot_data["interval"])
+                        # مورد ۶: مدیریت خطای مجزا برای هر ارسال مدیا
+                        try:
+                            if m_type == "photo":
+                                await safe_telegram_call(context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=cap, parse_mode="Markdown", message_thread_id=thread_id))
+                            elif m_type == "animation":
+                                await safe_telegram_call(context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=cap, parse_mode="Markdown", message_thread_id=thread_id))
+                            elif m_type == "voice":
+                                await safe_telegram_call(context.bot.send_voice(chat_id=chat_id, voice=f_id, message_thread_id=thread_id))
+                                if tags_text:
+                                    await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id))
+                            elif m_type == "sticker":
+                                await safe_telegram_call(context.bot.send_sticker(chat_id=chat_id, sticker=f_id, message_thread_id=thread_id))
+                                if tags_text:
+                                    await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id))
+                        except Exception as me:
+                            logging.error(f"Error sending media item {m_type}: {me}")
+
+                elif mode == "sequential":
+                    combined = messages + medias
+                    if combined:
+                        total_messages = len(messages)
+                        if seq_index >= len(combined):
+                            seq_index = 0
+
+                        item = combined[seq_index]
+                        seq_index = (seq_index + 1) % len(combined)
+
+                        if isinstance(item, str):
+                            msg_txt = escape_markdown(item)
+                            if tags_text:
+                                msg_txt += f"\n\n{tags_text}"
+                            await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=msg_txt, parse_mode="Markdown", message_thread_id=thread_id))
+                        elif isinstance(item, dict):
+                            m_type = item["type"]
+                            f_id = item["file_id"]
+                            cap = escape_markdown(item.get("caption", ""))
+                            if tags_text:
+                                cap = f"{cap}\n\n{tags_text}" if cap else tags_text
+
+                            try:
+                                if m_type == "photo":
+                                    await safe_telegram_call(context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=cap, parse_mode="Markdown", message_thread_id=thread_id))
+                                elif m_type == "animation":
+                                    await safe_telegram_call(context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=cap, parse_mode="Markdown", message_thread_id=thread_id))
+                                elif m_type == "voice":
+                                    await safe_telegram_call(context.bot.send_voice(chat_id=chat_id, voice=f_id, message_thread_id=thread_id))
+                                    if tags_text:
+                                        await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id))
+                                elif m_type == "sticker":
+                                    await safe_telegram_call(context.bot.send_sticker(chat_id=chat_id, sticker=f_id, message_thread_id=thread_id))
+                                    if tags_text:
+                                        await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id))
+                            except Exception as me:
+                                logging.error(f"Error sending sequential media {m_type}: {me}")
+
+                elif mode == "random":
+                    all_items = messages + medias
+                    if all_items:
+                        item = random.choice(all_items)
+                        if isinstance(item, str):
+                            msg_txt = escape_markdown(item)
+                            if tags_text:
+                                msg_txt += f"\n\n{tags_text}"
+                            await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=msg_txt, parse_mode="Markdown", message_thread_id=thread_id))
+                        elif isinstance(item, dict):
+                            m_type = item["type"]
+                            f_id = item["file_id"]
+                            cap = escape_markdown(item.get("caption", ""))
+                            if tags_text:
+                                cap = f"{cap}\n\n{tags_text}" if cap else tags_text
+
+                            try:
+                                if m_type == "photo":
+                                    await safe_telegram_call(context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=cap, parse_mode="Markdown", message_thread_id=thread_id))
+                                elif m_type == "animation":
+                                    await safe_telegram_call(context.bot.send_animation(chat_id=chat_id, animation=f_id, caption=cap, parse_mode="Markdown", message_thread_id=thread_id))
+                                elif m_type == "voice":
+                                    await safe_telegram_call(context.bot.send_voice(chat_id=chat_id, voice=f_id, message_thread_id=thread_id))
+                                    if tags_text:
+                                        await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id))
+                                elif m_type == "sticker":
+                                    await safe_telegram_call(context.bot.send_sticker(chat_id=chat_id, sticker=f_id, message_thread_id=thread_id))
+                                    if tags_text:
+                                        await safe_telegram_call(context.bot.send_message(chat_id=chat_id, text=tags_text, parse_mode="Markdown", message_thread_id=thread_id))
+                            except Exception as me:
+                                logging.error(f"Error sending random media {m_type}: {me}")
+
+            except Exception as e:
+                logging.error(f"Error in auto send iteration: {e}")
+
+            await asyncio.sleep(bot_data.get("interval", 10))
+    except asyncio.CancelledError:
+        logging.info("Auto sending task cancelled successfully.")
+    except Exception as e:
+        logging.error(f"Error in auto send loop: {e}", exc_info=True)
 
 async def go_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     if not is_admin(update.effective_user.id): return
     await update.message.reply_text("⚙️ حالت اتک رو انتخاب کن:", reply_markup=get_attack_mode_menu(update.effective_user.id), message_thread_id=thread_id)
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    if not is_admin(update.effective_user.id): return
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    chat_id = update.effective_chat.id
+
+    if bot_data.get("attack_mode") == "lock":
+        locked_users = bot_data.get("locked_users", [])
+
+        for uid in locked_users:
+            try:
+                await safe_telegram_call(context.bot.restrict_chat_member(
+                    chat_id=chat_id,
+                    user_id=int(uid),
+                    permissions=ChatPermissions(can_send_messages=True)
+                ))
+
+                user_info = bot_data.get("saved_users", {}).get(uid, {})
+                username = user_info.get("custom_tag") or bot_data.get("username_cache", {}).get(uid, uid)
+
+                await safe_telegram_call(context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ فرد @{username} قفل شده آزاد شد!",
+                    message_thread_id=thread_id
+                ))
+
+            except Exception as e:
+                logging.error(f"Error unmuting {uid}: {e}")
+
+        bot_data["locked_users"] = []
+        bot_data["lock_paused"] = False
+
     bot_data["is_running"] = False
     save_db()
-    await update.message.reply_text("🛑 ارسال پیام‌ها متوقف شد.", message_thread_id=thread_id)
+
+    global active_attack_task
+    if active_attack_task and not active_attack_task.done():
+        active_attack_task.cancel()
+        try:
+            await active_attack_task
+        except asyncio.CancelledError:
+            pass
+        active_attack_task = None
+
+    await update.message.reply_text(
+        "🛑 ارسال پیام‌ها متوقف شد.",
+        message_thread_id=thread_id
+    )
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     if update.effective_user.id != OWNER_ID: return
     await update.message.reply_text("📦 فرمت بکاپ رو مشخص کن:", reply_markup=get_backup_menu(update.effective_user.id), message_thread_id=thread_id)
 
 async def recent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
     now = time.time()
-    recent_logs = [h for h in bot_data["history"] if now - h["time"] <= 86400]
+    recent_logs = [h for h in bot_data.get("history", []) if now - h["time"] <= 86400]
     text = "📜 **گزارش ۲۴ ساعت اخیر:**\n\n"
     for log in reversed(recent_logs):
         time_str = time.strftime('%H:%M:%S', time.localtime(log['time']))
-        text += f"⏱ [{time_str}] {log['event']}\n"
+        text += f"⏱ [{time_str}] {escape_markdown(log['event'])}\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
-    if update.effective_user.id != OWNER_ID: return
+    user_id = update.effective_user.id
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
 
-    msg = update.message
-    if msg.reply_to_message and msg.reply_to_message.document:
-        doc = msg.reply_to_message.document
-        file_name = doc.file_name.lower()
-        file = await context.bot.get_file(doc.file_id)
-        download_path = await file.download_to_drive()
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            bot_data.get("unauth_msg", "به توپم دست نزن"),
+            message_thread_id=thread_id
+        )
+        return
 
-        if file_name.endswith(".txt"):
-            with open(download_path, "r", encoding="utf-8") as f: content = f.read()
-            words = content.split()
-            bot_data["messages"].extend(words)
-            save_db()
-            await update.message.reply_text(f"✅ تعداد {len(words)} کلمه اضافه شدند!", message_thread_id=thread_id)
-        elif file_name.endswith(".json"):
-            await download_path.replace(DB_FILE)
-            load_db()
-            await update.message.reply_text("✅ دیتابیس کامل ریستور شد!", message_thread_id=thread_id)
+    if not update.message.reply_to_message or not update.message.reply_to_message.document:
+        await update.message.reply_text(
+            "❌ لطفاً روی فایل بکاپ دیتابیس ریپلای کنید.",
+            message_thread_id=thread_id
+        )
+        return
 
-        if os.path.exists(download_path): os.remove(download_path)
+    temp_file = "restore_temp.json"
+    try:
+        document = update.message.reply_to_message.document
+        file = await context.bot.get_file(document.file_id)
+        await file.download_to_drive(temp_file)
+
+        with open(temp_file, "r", encoding="utf-8") as f:
+            new_data = json.load(f)
+            
+        validated_data = validate_and_merge_data(new_data)
+
+        global bot_data
+        async with db_lock:
+            bot_data = validated_data
+        save_db()
+
+        await update.message.reply_text(
+            "✅ دیتابیس با موفقیت ریستور و اعتبارسنجی شد.",
+            message_thread_id=thread_id
+        )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ خطا در ریستور:\n{e}",
+            message_thread_id=thread_id
+        )
+    finally:
+        # مورد ۸: تضمین حذف فایل موقت در بلاک finally
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception as e:
+                logging.error(f"Error removing temp restore file: {e}")
 
 async def history_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     if not is_admin(update.effective_user.id) or not context.args: return
     uid = context.args[0]
     logs = bot_data.get("user_logs", {}).get(uid, [])
@@ -924,15 +1235,19 @@ async def history_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = f"📜 **تاریخچه پیام‌های `{uid}`:**\n\n"
     for l in logs[-15:]: 
-        text += f"⏱ [{l['time']}] {l['text']}\n"
-    await update.message.reply_text(text, message_thread_id=thread_id)
+        text += f"⏱ [{l['time']}] {escape_markdown(l['text'])}\n"
+    await update.message.reply_text(text, parse_mode="Markdown", message_thread_id=thread_id)
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
     if not is_admin(update.effective_user.id): return
+    
     start_time = time.time()
-    msg = await update.message.reply_text("در حال محاسبه پینگ...", message_thread_id=thread_id)
-    ping = round((time.time() - start_time) * 1000, 2)
+    try:
+        await context.bot.get_me()
+        ping = round((time.time() - start_time) * 1000, 2)
+    except Exception:
+        ping = 0.0
 
     status_text = (
         f"📊 **وضعیت ربات اتکر:**\n\n"
@@ -941,70 +1256,135 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 افراد سیو شده: {len(bot_data['saved_users'])}\n"
         f"💬 پیام‌های متنی: {len(bot_data['messages'])}\n"
         f"🖼 تعداد مدیاها: {len(bot_data['medias'])}\n"
-        f"🏷 کلمه تگ فعلی: {bot_data['tag_text']}\n"
-        f"💬 متن غیرادمین: {bot_data.get('unauth_msg', 'به توپم دست نزن')}\n"
+        f"🏷 کلمه تگ فعلی: {escape_markdown(bot_data['tag_text'])}\n"
+        f"💬 متن غیرادمین: {escape_markdown(bot_data.get('unauth_msg', 'به توپم دست نزن'))}\n"
         f"⏱ فاصله ارسال: {bot_data['interval']} ثانیه\n"
         f"🚀 حالت فعلی: {bot_data.get('attack_mode', 'نامشخص')}\n"
     )
-    await msg.edit_text(status_text)
+    await update.message.reply_text(status_text, parse_mode="Markdown", message_thread_id=thread_id)
 
 async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    if not msg: return
+    if not msg:
+        return
 
-    # ذخیره و کَش زنده یوزرنیم هر کسی که چت می‌کنه
     if msg.from_user:
         uid_str = str(msg.from_user.id)
         if msg.from_user.username:
-            bot_data.setdefault("username_cache", {})[uid_str] = msg.from_user.username
-            save_db()
+            cache = bot_data.setdefault("username_cache", {})
+            if len(cache) > 1000:
+                cache.pop(next(iter(cache)))
+            cache[uid_str] = msg.from_user.username
 
+    # مورد ۱۱: محدودسازی joined_groups برای جلوگیری از رشد بی‌رویه حافظه
     if msg.chat.type in ["group", "supergroup"]:
-        bot_data.setdefault("joined_groups", {})[str(msg.chat.id)] = msg.chat.title
-        save_db()
+        groups = bot_data.setdefault("joined_groups", {})
+        groups[str(msg.chat.id)] = msg.chat.title
+        if len(groups) > 500:
+            groups.pop(next(iter(groups)))
 
     if msg.left_chat_member:
         left_user = msg.left_chat_member
         uid_str = str(left_user.id)
+
         if uid_str in bot_data["saved_users"]:
             thread_id = msg.message_thread_id if msg.is_topic_message else None
             uname = f"@{left_user.username}" if left_user.username else left_user.full_name
-            alert = f"📢 شخص {uname} با اینکه فحش گذاشته شد لف داد و بی‌غیرتی خودش رو ثابت کرد! 🤣"
-            await context.bot.send_message(chat_id=msg.chat_id, text=alert, message_thread_id=thread_id)
+
+            await update.message.reply_text(
+                text=f"📢 شخص {escape_markdown(uname)} با اینکه فحش گذاشته شد لف داد و بی‌غیرتی خودش رو ثابت کرد! 🤣",
+                parse_mode="Markdown",
+                message_thread_id=thread_id
+            )
+
+            if bot_data.get("attack_mode") == "lock":
+                bot_data["lock_paused"] = True
+                bot_data["lock_wait_user"] = uid_str
+                save_db()
+
+                await update.message.reply_text(
+                    text=f"🔒 به علت لف دادن {escape_markdown(uname)} سیو شده، ارسال پیام در حالت قفلی به پایان رسید!",
+                    parse_mode="Markdown",
+                    message_thread_id=thread_id
+                )
+
+    if msg.new_chat_members:
+        thread_id = msg.message_thread_id if msg.is_topic_message else None
+
+        for new_user in msg.new_chat_members:
+            uid_str = str(new_user.id)
+
+            if uid_str == bot_data.get("lock_wait_user"):
+                uname = f"@{new_user.username}" if new_user.username else new_user.full_name
+
+                bot_data["lock_paused"] = False
+                bot_data.pop("lock_wait_user", None)
+                save_db()
+
+                await update.message.reply_text(
+                    text=f"✅ شخص {escape_markdown(uname)} سیو شده مجدد وارد گروه شد!\nارسال پیام ادامه می‌یابد.",
+                    parse_mode="Markdown",
+                    message_thread_id=thread_id
+                )
 
     if msg.from_user and str(msg.from_user.id) in bot_data["saved_users"]:
         uid_str = str(msg.from_user.id)
-        bot_data.setdefault("user_logs", {}).setdefault(uid_str, []).append({
+        user_logs = bot_data.setdefault("user_logs", {}).setdefault(uid_str, [])
+        user_logs.append({
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "text": msg.text or "[Media/Other]"
         })
-        save_db()
+        if len(user_logs) > 50:
+            user_logs.pop(0)
 
-# --- سیستم پینگ خودکار جهت بیدار نگه‌داشتن هاست ---
 async def handle_ping(request): 
     return web.Response(text="Bot is Alive!")
 
 async def auto_keep_alive(port):
-    await asyncio.sleep(10)
-    url = f"http://localhost:{port}/"
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                async with session.get(url) as resp:
+    try:
+        await asyncio.sleep(10)
+        url = f"http://localhost:{port}/"
+        async with aiohttp.ClientSession() as session:
+            while True:
+                try:
+                    async with session.get(url) as resp:
+                        pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
                     pass
-            except Exception:
-                pass
-            await asyncio.sleep(300)
+                await asyncio.sleep(300)
+    except asyncio.CancelledError:
+        logging.info("Keep-alive task cancelled.")
 
 async def start_web_server():
-    web_app = web.Application()
-    web_app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(web_app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    asyncio.create_task(auto_keep_alive(port))
+    global web_runner, keep_alive_task
+    try:
+        web_app = web.Application()
+        web_app.router.add_get('/', handle_ping)
+        web_runner = web.AppRunner(web_app)
+        await web_runner.setup()
+        port = int(os.environ.get("PORT", 8080))
+        site = web.TCPSite(web_runner, '0.0.0.0', port)
+        await site.start()
+        keep_alive_task = asyncio.create_task(auto_keep_alive(port))
+    except Exception as e:
+        logging.error(f"Error starting web server: {e}")
+
+# مورد ۱۰: پاکسازی و Cleanup مناسب وب‌سفر و تسک‌ها هنگام خاموش شدن برنامه
+async def cleanup_web_server():
+    global keep_alive_task, web_runner
+    if keep_alive_task and not keep_alive_task.done():
+        keep_alive_task.cancel()
+        try:
+            await keep_alive_task
+        except asyncio.CancelledError:
+            pass
+    if web_runner:
+        try:
+            await web_runner.cleanup()
+        except Exception as e:
+            logging.error(f"Error cleaning up web runner: {e}")
 
 async def main():
     await start_web_server()
@@ -1063,11 +1443,24 @@ async def main():
 
     print("ربات آنلاین شد...")
 
-    async with app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        await asyncio.Event().wait()
+    try:
+        async with app:
+            await app.initialize()
+            await app.start()
+            await app.updater.start_polling(drop_pending_updates=True)
+            await asyncio.Event().wait()
+    finally:
+        global active_attack_task
+        if active_attack_task and not active_attack_task.done():
+            active_attack_task.cancel()
+            try:
+                await active_attack_task
+            except asyncio.CancelledError:
+                pass
+        await cleanup_web_server()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
