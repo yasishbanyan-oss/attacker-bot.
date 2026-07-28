@@ -14,6 +14,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
+from aiogram.enums import ButtonStyle
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -199,39 +200,52 @@ async def resolve_user_input(input_str: str, context: ContextTypes.DEFAULT_TYPE)
             
     return None, None, None
 
+# منوهای شیشه‌ای با ترکیب رنگ‌های آبی (PRIMARY)، قرمز (DANGER) و سبز (SUCCESS)
 def get_main_menu(owner_user_id: int):
     keyboard = [
-        [InlineKeyboardButton("💬 تنظیم پیام‌ها", callback_data=f"menu_set_msg:{owner_user_id}"), InlineKeyboardButton("🖼 تنظیم مدیا", callback_data=f"menu_set_media:{owner_user_id}")],
-        [InlineKeyboardButton("⏱ زمان ارسال", callback_data=f"menu_time:{owner_user_id}"), InlineKeyboardButton("🏷 کلمه تگ", callback_data=f"menu_tag_text:{owner_user_id}")],
-        [InlineKeyboardButton("📢 متن غیرادمین", callback_data=f"menu_unauth_msg:{owner_user_id}"), InlineKeyboardButton("🔒 تنظیم پیام قفل", callback_data=f"menu_lock_msg:{owner_user_id}")],
-        [InlineKeyboardButton("👥 مدیریت ادمین‌ها", callback_data=f"menu_admins:{owner_user_id}"), InlineKeyboardButton("📖 راهنما", callback_data=f"menu_help:{owner_user_id}")]
+        [
+            InlineKeyboardButton("💬 تنظیم پیام‌ها", callback_data=f"menu_set_msg:{owner_user_id}", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton("🖼 تنظیم مدیا", callback_data=f"menu_set_media:{owner_user_id}", style=ButtonStyle.SUCCESS)
+        ],
+        [
+            InlineKeyboardButton("⏱ زمان ارسال", callback_data=f"menu_time:{owner_user_id}", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton("🏷 کلمه تگ", callback_data=f"menu_tag_text:{owner_user_id}", style=ButtonStyle.PRIMARY)
+        ],
+        [
+            InlineKeyboardButton("📢 متن غیرادمین", callback_data=f"menu_unauth_msg:{owner_user_id}", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton("🔒 تنظیم پیام قفل", callback_data=f"menu_lock_msg:{owner_user_id}", style=ButtonStyle.DANGER)
+        ],
+        [
+            InlineKeyboardButton("👥 مدیریت ادمین‌ها", callback_data=f"menu_admins:{owner_user_id}", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton("📖 راهنما", callback_data=f"menu_help:{owner_user_id}", style=ButtonStyle.PRIMARY)
+        ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_attack_mode_menu(owner_user_id: int):
     keyboard = [
-        [InlineKeyboardButton("🎲 تصادفی (Random)", callback_data=f"mode_random:{owner_user_id}")],
-        [InlineKeyboardButton("🔢 ترتیبی (Sequential)", callback_data=f"mode_sequential:{owner_user_id}")],
-        [InlineKeyboardButton("💣 خشاب تک‌پیامی (Single Bomb)", callback_data=f"mode_bomb:{owner_user_id}")],
-        [InlineKeyboardButton("🔒 اتک قفلی (Lock & Mute)", callback_data=f"mode_lock:{owner_user_id}")]
+        [InlineKeyboardButton("🎲 تصادفی (Random)", callback_data=f"mode_random:{owner_user_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton("🔢 ترتیبی (Sequential)", callback_data=f"mode_sequential:{owner_user_id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton("💣 خشاب تک‌پیامی (Single Bomb)", callback_data=f"mode_bomb:{owner_user_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton("🔒 اتک قفلی (Lock & Mute)", callback_data=f"mode_lock:{owner_user_id}", style=ButtonStyle.DANGER)]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_time_menu(owner_user_id: int):
     keyboard = [
-        [InlineKeyboardButton("2 ثانیه", callback_data=f"time_2:{owner_user_id}"), InlineKeyboardButton("5 ثانیه", callback_data=f"time_5:{owner_user_id}")],
-        [InlineKeyboardButton("10 ثانیه", callback_data=f"time_10:{owner_user_id}"), InlineKeyboardButton("30 ثانیه", callback_data=f"time_30:{owner_user_id}")],
-        [InlineKeyboardButton("⏱ دلخواه", callback_data=f"time_custom:{owner_user_id}")],
-        [InlineKeyboardButton("🔙 بازگشت", callback_data=f"menu_main:{owner_user_id}")]
+        [InlineKeyboardButton("2 ثانیه", callback_data=f"time_2:{owner_user_id}", style=ButtonStyle.PRIMARY), InlineKeyboardButton("5 ثانیه", callback_data=f"time_5:{owner_user_id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton("10 ثانیه", callback_data=f"time_10:{owner_user_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton("30 ثانیه", callback_data=f"time_30:{owner_user_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton("⏱ دلخواه", callback_data=f"time_custom:{owner_user_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data=f"menu_main:{owner_user_id}", style=ButtonStyle.DANGER)]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_admin_menu(owner_user_id: int):
     keyboard = [
-        [InlineKeyboardButton("➕ افزودن ادمین", callback_data=f"admin_add:{owner_user_id}"), InlineKeyboardButton("➖ حذف ادمین", callback_data=f"admin_del:{owner_user_id}")],
-        [InlineKeyboardButton("📋 لیست ادمین‌ها", callback_data=f"admin_list:{owner_user_id}"), InlineKeyboardButton("⚠️ پاکسازی همه ادمین‌ها", callback_data=f"admin_delall_confirm:{owner_user_id}")],
-        [InlineKeyboardButton("👑 مالک‌ها", callback_data=f"admin_owners:{owner_user_id}")],
-        [InlineKeyboardButton("🔙 بازگشت", callback_data=f"menu_main:{owner_user_id}")]
+        [InlineKeyboardButton("➕ افزودن ادمین", callback_data=f"admin_add:{owner_user_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton("➖ حذف ادمین", callback_data=f"admin_del:{owner_user_id}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton("📋 لیست ادمین‌ها", callback_data=f"admin_list:{owner_user_id}", style=ButtonStyle.PRIMARY), InlineKeyboardButton("⚠️ پاکسازی همه ادمین‌ها", callback_data=f"admin_delall_confirm:{owner_user_id}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton("👑 مالک‌ها", callback_data=f"admin_owners:{owner_user_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data=f"menu_main:{owner_user_id}", style=ButtonStyle.DANGER)]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -243,19 +257,19 @@ def get_permissions_menu(owner_user_id: int, target_id: int):
     p3 = "✅" if "commands" in perms else "❌"
 
     keyboard = [
-        [InlineKeyboardButton(f"{p1} دسترسی ادمین‌ها", callback_data=f"perm_admins:{owner_user_id}:{target_id}")],
-        [InlineKeyboardButton(f"{p2} دسترسی پیام/مدیا", callback_data=f"perm_messages:{owner_user_id}:{target_id}")],
-        [InlineKeyboardButton(f"{p3} دسترسی دستورات", callback_data=f"perm_commands:{owner_user_id}:{target_id}")],
-        [InlineKeyboardButton("💾 ثبت و نهایی‌سازی", callback_data=f"perm_save:{owner_user_id}:{target_id}")],
-        [InlineKeyboardButton("🔙 بازگشت", callback_data=f"menu_admins:{owner_user_id}")]
+        [InlineKeyboardButton(f"{p1} دسترسی ادمین‌ها", callback_data=f"perm_admins:{owner_user_id}:{target_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(f"{p2} دسترسی پیام/مدیا", callback_data=f"perm_messages:{owner_user_id}:{target_id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(f"{p3} دسترسی دستورات", callback_data=f"perm_commands:{owner_user_id}:{target_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton("💾 ثبت و نهایی‌سازی", callback_data=f"perm_save:{owner_user_id}:{target_id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data=f"menu_admins:{owner_user_id}", style=ButtonStyle.DANGER)]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_backup_menu(owner_user_id: int):
     keyboard = [
-        [InlineKeyboardButton("🎬 گیف‌ها", callback_data=f"backup_animation:{owner_user_id}"), InlineKeyboardButton("🎭 استیکرها", callback_data=f"backup_sticker:{owner_user_id}")],
-        [InlineKeyboardButton("📷 عکس‌ها", callback_data=f"backup_photo:{owner_user_id}"), InlineKeyboardButton("🎙 ویس‌ها", callback_data=f"backup_voice:{owner_user_id}")],
-        [InlineKeyboardButton("📦 کل دیتابیس", callback_data=f"backup_full:{owner_user_id}")]
+        [InlineKeyboardButton("🎬 گیف‌ها", callback_data=f"backup_animation:{owner_user_id}", style=ButtonStyle.PRIMARY), InlineKeyboardButton("🎭 استیکرها", callback_data=f"backup_sticker:{owner_user_id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton("📷 عکس‌ها", callback_data=f"backup_photo:{owner_user_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton("🎙 ویس‌ها", callback_data=f"backup_voice:{owner_user_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton("📦 کل دیتابیس", callback_data=f"backup_full:{owner_user_id}", style=ButtonStyle.SUCCESS)]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -419,8 +433,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "admin_delall_confirm":
         kb = [
-            [InlineKeyboardButton("✅ آره پاک کن", callback_data=f"admin_delall_yes:{owner_user_id}")],
-            [InlineKeyboardButton("❌ بیخیال", callback_data=f"admin_list:{owner_user_id}")]
+            [InlineKeyboardButton("✅ آره پاک کن", callback_data=f"admin_delall_yes:{owner_user_id}", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton("❌ بیخیال", callback_data=f"admin_list:{owner_user_id}", style=ButtonStyle.PRIMARY)]
         ]
         await query.edit_message_text("⚠️ مطمئنی می‌خوای همه ادمین‌ها بپرن؟", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -855,8 +869,8 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     kb = [
-        [InlineKeyboardButton("➕ افزودن به تارگت‌ها", callback_data=f"target_add_{target_user.id}:{update.effective_user.id}")],
-        [InlineKeyboardButton("❌ ولش کن", callback_data=f"menu_main:{update.effective_user.id}")]
+        [InlineKeyboardButton("➕ افزودن به تارگت‌ها", callback_data=f"target_add_{target_user.id}:{update.effective_user.id}", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton("❌ ولش کن", callback_data=f"menu_main:{update.effective_user.id}", style=ButtonStyle.DANGER)]
     ]
     
     try:
@@ -1159,7 +1173,6 @@ async def recent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # کلمه global به بالای تابع منتقل شد تا خطای SyntaxError برطرف شود
     global bot_data
 
     user_id = update.effective_user.id
