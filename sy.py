@@ -22,7 +22,6 @@ BOT_TOKEN = "8791724770:AAFVk9FHklBaZ7o5pOE1-2LWNJKx7k68yQE"
 OWNER_ID = 6749949992
 DB_FILE = "database.json"
 
-# تعریف ساختار پیش‌فرض و استاندارد برای اعتبارسنجی (مورد ۲)
 DEFAULT_BOT_DATA = {
     "messages": [],           
     "medias": [],            
@@ -73,7 +72,6 @@ def escape_markdown(text: str) -> str:
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
-# مورد ۱ و ۷: ذخیره ایمن دیتابیس به صورت اتمیک با Lock مشترک و عدم بلاک شدن Event Loop
 async def save_db_async():
     async with db_lock:
         temp_file = DB_FILE + ".tmp"
@@ -97,7 +95,6 @@ def save_db():
         loop = asyncio.get_running_loop()
         loop.create_task(save_db_async())
     except RuntimeError:
-        # اگر لوپی در جریان نبود (مثلا هنگام لود اولیه)
         temp_file = DB_FILE + ".tmp"
         try:
             with open(temp_file, "w", encoding="utf-8") as f:
@@ -106,7 +103,6 @@ def save_db():
         except Exception as e:
             logging.error(f"Error in sync save_db: {e}")
 
-# مورد ۲: اعتبارسنجی ساختار و نوع داده‌ها هنگام Restore و جلوگیری از ورود کلیدهای ناشناس
 def validate_and_merge_data(loaded_data: dict) -> dict:
     if not isinstance(loaded_data, dict):
         raise ValueError("Loaded data is not a valid dictionary.")
@@ -121,9 +117,6 @@ def validate_and_merge_data(loaded_data: dict) -> dict:
                 merged[key] = val
             elif isinstance(default_val, (int, float, str, bool)) and isinstance(val, type(default_val)):
                 merged[key] = val
-            else:
-                # اگر نوع داده مطابقت نداشت، مقدار پیش‌فرض حفظ می‌شود
-                pass
     return merged
 
 def load_db():
@@ -396,7 +389,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = query.message.chat_id
         thread_id = query.message.message_thread_id if query.message.is_topic_message else None
         
-        # مورد ۵: مدیریت کامل Taskها (لغو تسک قبلی و ریست کردن متغیر)
         if active_attack_task and not active_attack_task.done():
             active_attack_task.cancel()
             try:
@@ -452,7 +444,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p = action.split("_")[1]
         target_id = data_parts[2] if len(data_parts) > 2 else "0"
         
-        # مورد ۳: ثبت نهایی ادمین دقیقاً بعد از زدن دکمه Save
         if p == "save":
             t_data = bot_data.get("temp_admin_data", {})
             bot_data["admins"][str(target_id)] = {
@@ -632,7 +623,6 @@ async def receive_admin_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, uname, fname = await resolve_user_input(text, context)
     
     if uid:
-        # مورد ۳: ادمین قبل از پایان تنظیم Permissionها داخل admins ثبت نشود.
         bot_data["temp_admin_data"] = {
             "id": uid,
             "username": uname,
@@ -913,7 +903,6 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=OWNER_ID, text=rep, parse_mode="Markdown")
     except Exception: pass
 
-# تابع کمکی برای مدیریت FloodWait (مورد ۹)
 async def safe_telegram_call(coro):
     while True:
         try:
@@ -932,7 +921,6 @@ async def start_auto_sending(chat_id: int, thread_id: int, context: ContextTypes
     seq_index = 0
     try:
         while bot_data.get("is_running", False):
-            # مورد ۴: بررسی دقیق حالت Lock و وضعیت pause
             if bot_data.get("lock_paused", False):
                 await asyncio.sleep(2)
                 continue
@@ -1004,7 +992,6 @@ async def start_auto_sending(chat_id: int, thread_id: int, context: ContextTypes
                         if tags_text:
                             cap = f"{cap}\n\n{tags_text}" if cap else tags_text
 
-                        # مورد ۶: مدیریت خطای مجزا برای هر ارسال مدیا
                         try:
                             if m_type == "photo":
                                 await safe_telegram_call(context.bot.send_photo(chat_id=chat_id, photo=f_id, caption=cap, parse_mode="Markdown", message_thread_id=thread_id))
@@ -1172,6 +1159,9 @@ async def recent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # کلمه global به بالای تابع منتقل شد تا خطای SyntaxError برطرف شود
+    global bot_data
+
     user_id = update.effective_user.id
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
 
@@ -1200,7 +1190,6 @@ async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         validated_data = validate_and_merge_data(new_data)
 
-        global bot_data
         async with db_lock:
             bot_data = validated_data
         save_db()
@@ -1216,7 +1205,6 @@ async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_thread_id=thread_id
         )
     finally:
-        # مورد ۸: تضمین حذف فایل موقت در بلاک finally
         if os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
@@ -1276,7 +1264,6 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cache.pop(next(iter(cache)))
             cache[uid_str] = msg.from_user.username
 
-    # مورد ۱۱: محدودسازی joined_groups برای جلوگیری از رشد بی‌رویه حافظه
     if msg.chat.type in ["group", "supergroup"]:
         groups = bot_data.setdefault("joined_groups", {})
         groups[str(msg.chat.id)] = msg.chat.title
@@ -1371,7 +1358,6 @@ async def start_web_server():
     except Exception as e:
         logging.error(f"Error starting web server: {e}")
 
-# مورد ۱۰: پاکسازی و Cleanup مناسب وب‌سفر و تسک‌ها هنگام خاموش شدن برنامه
 async def cleanup_web_server():
     global keep_alive_task, web_runner
     if keep_alive_task and not keep_alive_task.done():
