@@ -41,7 +41,8 @@ DEFAULT_BOT_DATA = {
         }
     },
     "user_logs": {},          
-    "history": [],            
+    "history": [], 
+    "undo_stack": [],           
     "joined_groups": {},
     "username_cache": {},
     "locked_users": [],
@@ -103,6 +104,24 @@ def save_db():
             os.replace(temp_file, DB_FILE)
         except Exception as e:
             logging.error(f"Error in sync save_db: {e}")
+
+def create_undo_point():
+    try:
+        data_copy = dict(bot_data)
+        data_copy["undo_stack"] = []
+
+        snapshot = json.loads(json.dumps(data_copy))
+
+        stack = bot_data.setdefault("undo_stack", [])
+        stack.append(snapshot)
+
+        if len(stack) > 10:
+            stack.pop(0)
+
+        save_db()
+
+    except Exception as e:
+        logging.error(f"Undo save error: {e}")          
 
 def validate_and_merge_data(loaded_data: dict) -> dict:
     if not isinstance(loaded_data, dict):
@@ -390,12 +409,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return WAITING_FOR_CUSTOM_TIME
         else:
             sec = int(val)
+            create_undo_point()
             bot_data["interval"] = sec
             save_db()
             await query.edit_message_text(f"✅ زمان ارسال روی {sec} ثانیه تنظیم شد.", reply_markup=get_main_menu(owner_user_id))
 
     elif action.startswith("mode_"):
         mode = action.split("_")[1]
+        create_undo_point()
         bot_data["attack_mode"] = mode
         bot_data["is_running"] = True
         save_db()
@@ -439,6 +460,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ مطمئنی می‌خوای همه ادمین‌ها بپرن؟", reply_markup=InlineKeyboardMarkup(kb))
 
     elif action == "admin_delall_yes":
+        create_undo_point()
         bot_data["admins"] = {
             str(OWNER_ID): {
                 "type": "permanent",
@@ -460,6 +482,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if p == "save":
             t_data = bot_data.get("temp_admin_data", {})
+            create_undo_point()
             bot_data["admins"][str(target_id)] = {
                 "type": "permanent",
                 "username": t_data.get("username", "نامشخص"),
@@ -509,6 +532,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     cache.pop(next(iter(cache)))
         except Exception: pass
 
+        create_undo_point()
         bot_data["saved_users"][target_uid] = {"username": fetched_username, "custom_tag": None}
         save_db()
         
@@ -560,6 +584,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def collect_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
+        create_undo_point()
         bot_data["messages"].append(update.message.text)
         save_db()
         thread_id = update.message.message_thread_id if update.message.is_topic_message else None
@@ -577,6 +602,7 @@ async def collect_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif msg.sticker: media_item = {"type": "sticker", "file_id": msg.sticker.file_id}
 
     if media_item:
+        create_undo_point()
         bot_data["medias"].append(media_item)
         save_db()
         await update.message.reply_text(f"✅ مدیا ذخیره شد! (تعداد: {len(bot_data['medias'])})\nبعدی رو بفرست یا /done رو بزن.", message_thread_id=thread_id)
@@ -590,6 +616,7 @@ async def done_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_tag_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         new_tag = update.message.text.strip()
+        create_undo_point()
         bot_data["tag_text"] = new_tag
         save_db()
         thread_id = update.message.message_thread_id if update.message.is_topic_message else None
@@ -599,6 +626,7 @@ async def receive_tag_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_unauth_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         new_unauth = update.message.text.strip()
+        create_undo_point()
         bot_data["unauth_msg"] = new_unauth
         save_db()
         thread_id = update.message.message_thread_id if update.message.is_topic_message else None
@@ -608,6 +636,7 @@ async def receive_unauth_msg(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def receive_lock_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.text:
         new_lock = update.message.text.strip()
+        create_undo_point()
         bot_data["lock_msg"] = new_lock
         save_db()
         thread_id = update.message.message_thread_id if update.message.is_topic_message else None
@@ -620,6 +649,7 @@ async def receive_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE
         thread_id = update.message.message_thread_id if update.message.is_topic_message else None
         if text.isdigit():
             sec = int(text)
+            create_undo_point()
             bot_data["interval"] = sec
             save_db()
             await update.message.reply_text(f"✅ تایم ارسال شد {sec} ثانیه.", reply_markup=get_main_menu(update.effective_user.id), message_thread_id=thread_id)
@@ -678,6 +708,7 @@ async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             target_uname = resolved_uname
 
     if target_uid:
+        create_undo_point()
         bot_data["admins"][target_uid] = {
             "type": "permanent",
             "username": target_uname,
@@ -710,6 +741,7 @@ async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if target_uid == str(OWNER_ID):
             await update.message.reply_text("❌ مالک اصلی رو نمی‌تونی پاک کنی کصخل!", message_thread_id=thread_id)
             return
+        create_undo_point()    
         del bot_data["admins"][target_uid]
         save_db()
         log_event(f"➖ حذف ادمین: {target_uid}")
@@ -719,35 +751,104 @@ async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text(bot_data.get("unauth_msg", "به توپم دست نزن"), message_thread_id=thread_id)
+        await update.message.reply_text(
+            bot_data.get("unauth_msg", "به توپم دست نزن"),
+            message_thread_id=thread_id
+        )
         return
 
+    bot_data.setdefault("saved_users", {})
+    bot_data.setdefault("username_cache", {})
+
     added = []
-    if update.message.reply_to_message and update.message.reply_to_message.from_user:
-        target_user = update.message.reply_to_message.from_user
-        uid = str(target_user.id)
-        uname = target_user.username or "NoUsername"
-        if uname != "NoUsername":
-            cache = bot_data.setdefault("username_cache", {})
-            cache[uid] = uname
-            if len(cache) > 1000:
-                cache.pop(next(iter(cache)))
-        custom_tag = " ".join(context.args) if context.args else None
-        bot_data["saved_users"][uid] = {"username": uname, "custom_tag": custom_tag}
-        added.append(f"{uid} (لقب: {custom_tag or 'پیش‌فرض'})")
+
+    # حالت ریپلای روی پیام کاربر
+   if update.message.reply_to_message and update.message.reply_to_message.from_user:
+    target_user = update.message.reply_to_message.from_user
+
+    uid = str(target_user.id)
+    uname = target_user.username or "NoUsername"
+
+    bot_data.setdefault("username_cache", {})
+    bot_data.setdefault("saved_users", {})
+
+    if uname != "NoUsername":
+        bot_data["username_cache"][uid] = uname
+
+        if len(bot_data["username_cache"]) > 1000:
+            bot_data["username_cache"].pop(
+                next(iter(bot_data["username_cache"]))
+            )
+
+    custom_tag = " ".join(context.args) if context.args else None
+
+    create_undo_point()
+
+    bot_data["saved_users"][uid] = {
+        "username": uname,
+        "custom_tag": custom_tag
+    }
+
+    added.append(
+        f"{uid} (لقب: {custom_tag or 'پیش‌فرض'})"
+    )
+
+
+    # حالت وارد کردن آیدی یا یوزرنیم
     elif context.args:
-        for arg in context.args:
+
+        custom_tag = None
+
+        args = context.args.copy()
+
+        # اگر آخرین آرگومان بعد از --tag بود به عنوان لقب بگیر
+        if "--tag" in args:
+            index = args.index("--tag")
+
+            if index + 1 < len(args):
+                custom_tag = " ".join(args[index + 1:])
+
+            args = args[:index]
+
+
+        for arg in args:
+
             uid, uname, _ = await resolve_user_input(arg, context)
+
             if uid:
-                bot_data["saved_users"][str(uid)] = {"username": uname or "NoUsername", "custom_tag": None}
-                added.append(f"{uid} (@{uname or 'بدون یوزرنیم'})")
+
+                create_undo_point()
+
+                bot_data["saved_users"][str(uid)] = {
+                    "username": uname or "NoUsername",
+                    "custom_tag": custom_tag
+                }
+
+                if uname:
+                    bot_data["username_cache"][str(uid)] = uname
+
+                added.append(
+                    f"{uid} (@{uname or 'بدون یوزرنیم'})"
+                )
+
 
     if added:
         save_db()
-        await update.message.reply_text(f"✅ ردیف شد، اضافه شدند:\n" + "\n".join(added), message_thread_id=thread_id)
+
+        await update.message.reply_text(
+            "✅ کاربران اضافه شدند:\n\n" +
+            "\n".join(added),
+            message_thread_id=thread_id
+        )
+
     else:
-        await update.message.reply_text("❌ ورودی نامعتبره. آیدی یا یوزرنیم رو وارد کن.", message_thread_id=thread_id)
+        await update.message.reply_text(
+            "❌ ورودی نامعتبره.\n"
+            "روی پیام کاربر ریپلای کن یا آیدی/یوزرنیم بده.",
+            message_thread_id=thread_id
+        )
 
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
@@ -805,6 +906,7 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if uid: target_id = str(uid)
 
     if target_id and target_id in bot_data["saved_users"]:
+        create_undo_point()
         del bot_data["saved_users"][target_id]
         save_db()
         await update.message.reply_text(f"❌ کاربر {target_id} بایکوت شد.", message_thread_id=thread_id)
@@ -814,13 +916,46 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delallsave_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     if not is_admin(update.effective_user.id): return
+    create_undo_point()
     bot_data["saved_users"].clear()
     save_db()
     await update.message.reply_text("🧹 همه تارگت‌ها جارو شدند.", message_thread_id=thread_id)
 
+async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    stack = bot_data.get("undo_stack", [])
+
+    if not stack:
+        await update.message.reply_text(
+            "❌ عملیات قابل برگشتی وجود ندارد.",
+            message_thread_id=thread_id
+        )
+        return
+
+
+    old_data = stack.pop()
+
+    bot_data.clear()
+    bot_data.update(old_data)
+
+    bot_data["undo_stack"] = stack
+
+    save_db()
+
+    await update.message.reply_text(
+        "↩️ آخرین عملیات با موفقیت برگشت داده شد.",
+        message_thread_id=thread_id
+    )    
+
 async def deltext_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     if not is_admin(update.effective_user.id): return
+    create_undo_point()
     bot_data["messages"].clear()
     save_db()
     await update.message.reply_text("🗑 متون خشاب پاک شدند.", message_thread_id=thread_id)
@@ -828,6 +963,7 @@ async def deltext_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delmedia_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     if not is_admin(update.effective_user.id): return
+    create_undo_point()
     bot_data["medias"].clear()
     save_db()
     await update.message.reply_text("🗑 مدیاهای خشاب پاک شدند.", message_thread_id=thread_id)
@@ -835,6 +971,7 @@ async def delmedia_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def deldata_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.message.message_thread_id if update.message.is_topic_message else None
     if not is_admin(update.effective_user.id): return
+    create_undo_point()
     bot_data["messages"].clear()
     bot_data["medias"].clear()
     save_db()
@@ -1137,6 +1274,7 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Error unmuting {uid}: {e}")
 
+        create_undo_point()
         bot_data["locked_users"] = []
         bot_data["lock_paused"] = False
 
@@ -1203,6 +1341,7 @@ async def restore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         validated_data = validate_and_merge_data(new_data)
 
+        create_undo_point()
         async with db_lock:
             bot_data = validated_data
         save_db()
@@ -1298,6 +1437,7 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if bot_data.get("attack_mode") == "lock":
+                create_undo_point()
                 bot_data["lock_paused"] = True
                 bot_data["lock_wait_user"] = uid_str
                 save_db()
@@ -1317,6 +1457,7 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if uid_str == bot_data.get("lock_wait_user"):
                 uname = f"@{new_user.username}" if new_user.username else new_user.full_name
 
+                create_undo_point()
                 bot_data["lock_paused"] = False
                 bot_data.pop("lock_wait_user", None)
                 save_db()
@@ -1425,6 +1566,7 @@ async def main():
     app.add_handler(CommandHandler("listmsg", listmsg_cmd))
     app.add_handler(CommandHandler("del", del_cmd))
     app.add_handler(CommandHandler("delallsave", delallsave_cmd))
+    app.add_handler(CommandHandler("undo", undo_cmd))
     app.add_handler(CommandHandler("deltext", deltext_cmd))
     app.add_handler(CommandHandler("delmedia", delmedia_cmd))
     app.add_handler(CommandHandler("deldata", deldata_cmd))
