@@ -765,7 +765,7 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     added = []
 
     # حالت ریپلای روی پیام کاربر
-   if update.message.reply_to_message and update.message.reply_to_message.from_user:
+if update.message.reply_to_message and update.message.reply_to_message.from_user:
     target_user = update.message.reply_to_message.from_user
 
     uid = str(target_user.id)
