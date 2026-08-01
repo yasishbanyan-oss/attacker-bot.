@@ -613,7 +613,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text("✅ بفرما اینم فایل بکاپ.")
 
-        elif action.startswith("addall_"):
+    elif action.startswith("addall_"):
 
         group_id = action.split("_", 1)[1]
 
