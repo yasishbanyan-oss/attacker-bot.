@@ -612,38 +612,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(out_file): os.remove(out_file)
 
         await query.edit_message_text("✅ بفرما اینم فایل بکاپ.")
-    elif data.startswith("addall_"):
 
-    group_id = data.split("_", 1)[1]
+        elif action.startswith("addall_"):
 
-    members = bot_data.get("group_members", {}).get(group_id, {})
+        group_id = action.split("_", 1)[1]
 
-    if not members:
+        members = bot_data.get("group_members", {}).get(group_id, {})
+
+        create_undo_point()
+
+        bot_data.setdefault("saved_users", {})
+
+        for uid, info in members.items():
+            bot_data["saved_users"][uid] = {
+                "username": info.get("username", "NoUsername"),
+                "custom_tag": None
+            }
+
+        save_db()
+
         await query.edit_message_text(
-            "❌ هیچ عضوی برای این گروه ثبت نشده است."
-        )
-        return
-
-    create_undo_point()
-
-    bot_data.setdefault("saved_users", {})
-
-    added = 0
-
-    for uid, info in members.items():
-
-        bot_data["saved_users"][uid] = {
-            "username": info.get("username", "NoUsername"),
-            "custom_tag": None
-        }
-
-        added += 1
-
-    save_db()
-
-    await query.edit_message_text(
-        f"✅ {added} کاربر با موفقیت به لیست تارگت اضافه شدند."
-    )    
+            "✅ تمام اعضای ثبت شده به لیست تارگت اضافه شدند."
+        )  
 
     elif action.startswith("target_add_"):
         target_uid = action.split("_")[2]
