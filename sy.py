@@ -560,6 +560,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/deladmin ID/@Username - حذف ادمین\n"
         "/set ID1 @Username2 - افزودن دسته‌ای آیدی/یوزرنیم یا لقب بر روی ریپلی\n"
         "/del ID/@Username - حذف یک فرد یا حذف بر روی ریپلی\n"
+        "/undo - بازگردانی آخرین عملیات (برگشت از تغییرات اخیر)\n" # <-- اضافه شده
         "/list - مشاهده افراد سیو شده\n"
         "/listmsg - مشاهده پیام‌ها و مدیاهای ثبت‌شده\n"
         "/delallsave - پاکسازی کامل افراد\n"
