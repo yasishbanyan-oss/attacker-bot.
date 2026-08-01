@@ -765,11 +765,10 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     added = []
 
     # حالت ریپلای روی پیام کاربر
-if update.message.reply_to_message and update.message.reply_to_message.from_user:
-    target_user = update.message.reply_to_message.from_user
-
-    uid = str(target_user.id)
-    uname = target_user.username or "NoUsername"
+   if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        target_user = update.message.reply_to_message.from_user
+        uid = str(target_user.id)
+        uname = target_user.username or "NoUsername"
 
     bot_data.setdefault("username_cache", {})
     bot_data.setdefault("saved_users", {})
