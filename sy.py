@@ -1571,7 +1571,7 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown",
                     message_thread_id=thread_id
                 )
-    if msg.from_user:
+   if msg.from_user:
     uid = str(msg.from_user.id)
 
     bot_data.setdefault("known_users", {})
