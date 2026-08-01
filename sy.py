@@ -750,7 +750,7 @@ async def deladmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ همچین ادمینی پیدا نشد.", message_thread_id=thread_id)
 
 async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thread_id = update.message.message_thread_id if update.message.is_topic_message else None
+    thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
 
     if not is_admin(update.effective_user.id):
         await update.message.reply_text(
@@ -770,55 +770,44 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = str(target_user.id)
         uname = target_user.username or "NoUsername"
 
-    bot_data.setdefault("username_cache", {})
-    bot_data.setdefault("saved_users", {})
+        if uname != "NoUsername":
+            bot_data["username_cache"][uid] = uname
+            if len(bot_data["username_cache"]) > 1000:
+                bot_data["username_cache"].pop(next(iter(bot_data["username_cache"])))
 
-    if uname != "NoUsername":
-        bot_data["username_cache"][uid] = uname
+        custom_tag = " ".join(context.args) if context.args else None
 
-        if len(bot_data["username_cache"]) > 1000:
-            bot_data["username_cache"].pop(
-                next(iter(bot_data["username_cache"]))
-            )
+        # ثبت نقطه Undo قبل از اعمال تغییر
+        if 'create_undo_point' in globals():
+            create_undo_point()
 
-    custom_tag = " ".join(context.args) if context.args else None
+        bot_data["saved_users"][uid] = {
+            "username": uname,
+            "custom_tag": custom_tag
+        }
 
-    create_undo_point()
-
-    bot_data["saved_users"][uid] = {
-        "username": uname,
-        "custom_tag": custom_tag
-    }
-
-    added.append(
-        f"{uid} (لقب: {custom_tag or 'پیش‌فرض'})"
-    )
-
+        added.append(
+            f"{uid} (لقب: {custom_tag or 'پیش‌فرض'})"
+        )
 
     # حالت وارد کردن آیدی یا یوزرنیم
     elif context.args:
-
         custom_tag = None
-
         args = context.args.copy()
 
         # اگر آخرین آرگومان بعد از --tag بود به عنوان لقب بگیر
         if "--tag" in args:
             index = args.index("--tag")
-
             if index + 1 < len(args):
                 custom_tag = " ".join(args[index + 1:])
-
             args = args[:index]
 
-
         for arg in args:
-
             uid, uname, _ = await resolve_user_input(arg, context)
-
             if uid:
-
-                create_undo_point()
+                # ثبت نقطه Undo قبل از افزودن هر کاربر
+                if 'create_undo_point' in globals():
+                    create_undo_point()
 
                 bot_data["saved_users"][str(uid)] = {
                     "username": uname or "NoUsername",
@@ -832,16 +821,13 @@ async def set_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"{uid} (@{uname or 'بدون یوزرنیم'})"
                 )
 
-
     if added:
         save_db()
-
         await update.message.reply_text(
             "✅ کاربران اضافه شدند:\n\n" +
             "\n".join(added),
             message_thread_id=thread_id
         )
-
     else:
         await update.message.reply_text(
             "❌ ورودی نامعتبره.\n"
