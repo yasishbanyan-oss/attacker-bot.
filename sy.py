@@ -45,8 +45,8 @@ DEFAULT_BOT_DATA = {
     "undo_stack": [],           
     "joined_groups": {},
     "username_cache": {},
-    "known_users": {}
-    "group_members": {}
+    "known_users": {},
+    "group_members": {},
     "locked_users": [],
     "lock_paused": False,
     "temp_admin_data": {}
