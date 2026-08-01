@@ -45,6 +45,8 @@ DEFAULT_BOT_DATA = {
     "undo_stack": [],           
     "joined_groups": {},
     "username_cache": {},
+    "known_users": {}
+    "group_members": {}
     "locked_users": [],
     "lock_paused": False,
     "temp_admin_data": {}
@@ -310,6 +312,98 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, message_thread_id=thread_id)
 
+async def setallmember_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ دسترسی ندارید")
+        return
+
+
+    chat = update.effective_chat
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text(
+            "❌ این دستور فقط داخل گروه کار می‌کند"
+        )
+        return
+
+
+    group_id = str(chat.id)
+
+    members = bot_data.get("group_members", {}).get(group_id, {})
+
+
+    if not members:
+        await update.message.reply_text(
+            "❌ هنوز هیچ کاربری از این گروه ثبت نشده"
+        )
+        return
+
+
+    text = "👥 لیست اعضای ثبت شده:\n\n"
+
+
+    for uid, info in members.items():
+
+        username = info.get("username", "NoUsername")
+
+        if username != "NoUsername":
+            text += f"@{username} - {uid}\n"
+
+        else:
+            text += f"{info.get('first_name','Unknown')} - {uid}\n"
+
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "✅ اضافه کردن همه به تارگت",
+                callback_data=f"addall_{group_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "❌ لغو",
+                callback_data="cancel_addall"
+            )
+        ]
+    ]
+
+
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def save_group_member(update: Update):
+
+    if not update.message:
+        return
+
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not user or not chat:
+        return
+
+    # فقط گروه و سوپرگروه
+    if chat.type in ["group", "supergroup"]:
+
+        group_id = str(chat.id)
+
+        bot_data.setdefault("group_members", {})
+
+        bot_data["group_members"].setdefault(group_id, {})
+
+
+        bot_data["group_members"][group_id][str(user.id)] = {
+            "username": user.username or "NoUsername",
+            "first_name": user.first_name or "Unknown"
+        }
+
+
+        save_db()    
+
 async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else None
@@ -518,6 +612,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(out_file): os.remove(out_file)
 
         await query.edit_message_text("✅ بفرما اینم فایل بکاپ.")
+    elif data.startswith("addall_"):
+
+    group_id = data.split("_", 1)[1]
+
+    members = bot_data.get("group_members", {}).get(group_id, {})
+
+    if not members:
+        await query.edit_message_text(
+            "❌ هیچ عضوی برای این گروه ثبت نشده است."
+        )
+        return
+
+    create_undo_point()
+
+    bot_data.setdefault("saved_users", {})
+
+    added = 0
+
+    for uid, info in members.items():
+
+        bot_data["saved_users"][uid] = {
+            "username": info.get("username", "NoUsername"),
+            "custom_tag": None
+        }
+
+        added += 1
+
+    save_db()
+
+    await query.edit_message_text(
+        f"✅ {added} کاربر با موفقیت به لیست تارگت اضافه شدند."
+    )    
 
     elif action.startswith("target_add_"):
         target_uid = action.split("_")[2]
@@ -1394,6 +1520,8 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
+    await save_group_member(update)
+
     if msg.from_user:
         uid_str = str(msg.from_user.id)
         if msg.from_user.username:
@@ -1453,6 +1581,20 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown",
                     message_thread_id=thread_id
                 )
+    if msg.from_user:
+    uid = str(msg.from_user.id)
+
+    bot_data.setdefault("known_users", {})
+    bot_data.setdefault("username_cache", {})
+
+    bot_data["known_users"][uid] = {
+        "username": msg.from_user.username or "",
+        "first_name": msg.from_user.first_name or "",
+        "last_name": msg.from_user.last_name or ""
+    }
+
+    if msg.from_user.username:
+        bot_data["username_cache"][uid] = msg.from_user.username
 
     if msg.from_user and str(msg.from_user.id) in bot_data["saved_users"]:
         uid_str = str(msg.from_user.id)
@@ -1518,6 +1660,12 @@ async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(
+    CommandHandler(
+        "setallmember",
+        setallmember_cmd
+    )
+)
 
     conv_handler = ConversationHandler(
         entry_points=[
